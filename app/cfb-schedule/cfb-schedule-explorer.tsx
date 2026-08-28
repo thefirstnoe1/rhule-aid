@@ -68,6 +68,7 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
   const [filters, setFilters] = useState<Filters>({ week: initialData.weeks[0]?.value || '', conference: '', division: 'FBS_FCS', status: '', rankedOnly: false });
   const [timezone, setTimezone] = useState('America/Chicago');
   const [layout, setLayout] = useState<LayoutMode>('cards');
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(Boolean(initialData.error));
   const [announcement, setAnnouncement] = useState(initialData.error ? 'Unable to load schedule data.' : '');
@@ -168,14 +169,14 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
   }
 
   useEffect(() => {
-    if (!hasLiveGames) return undefined;
+    if (!autoRefresh || !hasLiveGames) return undefined;
 
     const interval = window.setInterval(() => {
       void loadSchedule();
     }, 300000);
 
     return () => window.clearInterval(interval);
-  }, [hasLiveGames, loadSchedule]);
+  }, [autoRefresh, hasLiveGames, loadSchedule]);
 
   return (
     <div className="container-shell pb-20">
@@ -250,6 +251,15 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
               className="rounded-full bg-[var(--scarlet)] px-5 py-3 text-xs font-black uppercase tracking-[0.16em] text-white shadow-[0_18px_45px_var(--scarlet-shadow)] transition hover:bg-[var(--scarlet-dark)] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? 'Refreshing' : 'Refresh'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setAutoRefresh((enabled) => !enabled)}
+              aria-pressed={autoRefresh}
+              aria-label="Automatic live score updates"
+              className={`rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.14em] transition ${autoRefresh ? 'border-[var(--scarlet)] bg-[color-mix(in_srgb,var(--scarlet)_12%,var(--surface-strong))] text-[var(--scarlet)]' : 'border-[var(--border)] bg-[var(--surface-strong)] text-[var(--muted)] hover:text-[var(--foreground)]'}`}
+            >
+              Live updates {autoRefresh ? 'On' : 'Off'}
             </button>
             {scheduleData.lastUpdated && <p className="text-xs text-[var(--muted)]">Updated {new Date(scheduleData.lastUpdated).toLocaleTimeString()}</p>}
           </div>
