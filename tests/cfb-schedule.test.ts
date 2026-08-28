@@ -211,6 +211,36 @@ describe('CFBD division views', () => {
     expect(body.games.find(game => game.id === '1')?.tv).toBe('BTN');
   });
 
+  it('selects ESPN+ over Disney+ without replacing an ESPN+ only listing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
+      if (url.includes('/games/media')) return new Response(JSON.stringify([{ id: 1, outlet: 'Disney+' }, { id: 1, outlet: 'ESPN+' }]), { status: 200 });
+      if (url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ tv: string }> };
+    expect(body.games[0]?.tv).toBe('ESPN+');
+  });
+
+  it('selects ESPN over ESPN+ and Disney+', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
+      if (url.includes('/games/media')) return new Response(JSON.stringify([{ id: 1, outlet: 'Disney+' }, { id: 1, outlet: 'ESPN+' }, { id: 1, outlet: 'ESPN' }]), { status: 200 });
+      if (url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ tv: string }> };
+    expect(body.games[0]?.tv).toBe('ESPN');
+  });
+
   it('requests all CFBD media and normalizes streaming ESPN+', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

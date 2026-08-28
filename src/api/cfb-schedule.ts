@@ -59,7 +59,7 @@ interface CoreCompetitor { homeAway: 'home' | 'away'; score?: unknown; team?: { 
 const CFBD_BASE = 'https://api.collegefootballdata.com/games';
 const CFBD_LINES_BASE = 'https://api.collegefootballdata.com/lines';
 const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football';
-const CACHE_SCHEMA = 'v17';
+const CACHE_SCHEMA = 'v18';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
 const CALENDAR_CACHE_TTL = 86400;
@@ -145,14 +145,35 @@ async function fetchCFBDMedia(season: number, week: string, key: string): Promis
     if (!response.ok) throw new Error(`CFBD media failed: ${response.status}`);
     const data: unknown = await response.json();
     if (!Array.isArray(data)) throw new Error('Invalid CFBD media response');
-    return new Map(data.flatMap(row => {
+    const selected = new Map<string, string>();
+    for (const row of data) {
       const media = row as CFBDMedia;
-      return media.id !== undefined && media.outlet ? [[String(media.id), media.outlet] as [string, string]] : [];
-    }));
+      if (media.id === undefined || !media.outlet) continue;
+      const id = String(media.id);
+      const outlet = normalizeMediaOutlet(media.outlet);
+      const current = selected.get(id);
+      if (!current || mediaOutletRank(outlet) < mediaOutletRank(current) ||
+        (mediaOutletRank(outlet) === mediaOutletRank(current) && outlet.localeCompare(current) < 0)) selected.set(id, outlet);
+    }
+    return selected;
   } catch (error) {
     console.warn('CFBD game media unavailable; retaining TBD TV values:', error);
     return new Map();
   }
+}
+
+function normalizeMediaOutlet(outlet: string): string {
+  const normalized = outlet.trim().replace(/\s+/g, ' ');
+  if (/^espn\s*\+$/i.test(normalized)) return 'ESPN+';
+  if (/^disney\s*\+$/i.test(normalized)) return 'Disney+';
+  return normalized;
+}
+
+function mediaOutletRank(outlet: string): number {
+  if (outlet.toLowerCase() === 'espn') return 0;
+  if (outlet === 'ESPN+') return 1;
+  if (outlet === 'Disney+') return 2;
+  return 3;
 }
 
 interface ScheduleWeek { label: string; value: string }
