@@ -175,6 +175,24 @@ describe('CFBD division views', () => {
     expect(body.games.find(game => game.id === '1')?.tv).toBe('BTN');
   });
 
+  it('requests all CFBD media and normalizes streaming ESPN+', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
+      if (url.includes('/games/media')) return new Response(JSON.stringify([{ id: 1, outlet: 'ESPN+' }]), { status: 200 });
+      if (url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      if (url.includes('/scoreboard?')) return new Response(JSON.stringify({ events: [] }), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ tv: string }> };
+    const mediaRequest = vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/games/media'))?.[0];
+    expect(String(mediaRequest)).not.toContain('mediaType=tv');
+    expect(body.games[0]?.tv).toBe('ESPN+');
+  });
+
   it('preserves TBD TV when CFBD media fails', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

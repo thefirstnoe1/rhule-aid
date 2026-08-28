@@ -58,7 +58,7 @@ interface CoreCompetitor { homeAway: 'home' | 'away'; score?: unknown; team?: { 
 const CFBD_BASE = 'https://api.collegefootballdata.com/games';
 const CFBD_LINES_BASE = 'https://api.collegefootballdata.com/lines';
 const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football';
-const CACHE_SCHEMA = 'v15';
+const CACHE_SCHEMA = 'v16';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
 
@@ -132,7 +132,9 @@ async function fetchCFBD(season: number, week: string, key: string, division: 'f
 }
 
 async function fetchCFBDMedia(season: number, week: string, key: string): Promise<Map<string, string>> {
-  const params = new URLSearchParams({ year: String(season), seasonType: 'regular', week, mediaType: 'tv' });
+  // Do not restrict this request to TV: CFBD returns streaming outlets such
+  // as ESPN+ through its all-media response.
+  const params = new URLSearchParams({ year: String(season), seasonType: 'regular', week });
   try {
     const response = await fetch(`https://api.collegefootballdata.com/games/media?${params}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
     if (!response.ok) throw new Error(`CFBD media failed: ${response.status}`);
