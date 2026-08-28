@@ -255,6 +255,8 @@ describe('CFBD division views', () => {
 
     const response = await onRequest(context());
     const body = await response.json() as { games: Array<{ homeTeam: { rank?: number }; awayTeam: { rank?: number } }> };
+    const rankingsRequest = vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/rankings?'))?.[0];
+    expect(String(rankingsRequest)).not.toContain('poll=ap');
     expect(body.games[0]?.homeTeam.rank).toBe(7);
     expect(body.games[0]?.awayTeam.rank).toBeUndefined();
   });

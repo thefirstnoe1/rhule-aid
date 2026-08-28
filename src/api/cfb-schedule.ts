@@ -63,7 +63,7 @@ interface CoreCompetitor { homeAway: 'home' | 'away'; score?: unknown; team?: { 
 const CFBD_BASE = 'https://api.collegefootballdata.com/games';
 const CFBD_LINES_BASE = 'https://api.collegefootballdata.com/lines';
 const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football';
-const CACHE_SCHEMA = 'v21';
+const CACHE_SCHEMA = 'v22';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
 const CALENDAR_CACHE_TTL = 86400;
@@ -220,7 +220,7 @@ async function fetchCFBDRankings(env: Context['env'], season: number, week: stri
       const data = JSON.parse(cached) as { snapshots?: CFBDRankSnapshot[] };
       if (Array.isArray(data.snapshots)) snapshots = data.snapshots;
     }
-    const params = new URLSearchParams({ year: String(season), poll: 'ap' });
+    const params = new URLSearchParams({ year: String(season) });
     if (!snapshots) {
       const response = await fetch(`https://api.collegefootballdata.com/rankings?${params}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
       if (!response.ok) throw new Error(`CFBD rankings failed: ${response.status}`);
