@@ -63,7 +63,7 @@ interface CoreCompetitor { homeAway: 'home' | 'away'; score?: unknown; team?: { 
 const CFBD_BASE = 'https://api.collegefootballdata.com/games';
 const CFBD_LINES_BASE = 'https://api.collegefootballdata.com/lines';
 const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football';
-const CACHE_SCHEMA = 'v22';
+const CACHE_SCHEMA = 'v23';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
 const CALENDAR_CACHE_TTL = 86400;
@@ -135,11 +135,54 @@ async function fetchCFBD(season: number, week: string, key: string, division: 'f
   const params = new URLSearchParams({ year: String(season), seasonType: 'regular', week });
   if (division === 'fbs') params.set('classification', 'fbs');
   const endpoint = `${CFBD_BASE}?${params}`;
-  const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
-  if (!response.ok) throw new Error(`CFBD request failed: ${response.status}`);
-  const data: unknown = await response.json();
-  if (!Array.isArray(data)) throw new Error('Invalid CFBD games response');
-  return data as CFBDGame[];
+  try {
+    return await fetchCFBDGamesEndpoint(endpoint, key);
+  } catch (error) {
+    if (division !== 'fbs') throw error;
+    // Some CFBD deployments reject classification=fbs. Retry the unclassified
+    // endpoint so local team metadata can still enforce the FBS boundary.
+    params.delete('classification');
+    return fetchCFBDGamesEndpoint(`${CFBD_BASE}?${params}`, key);
+  }
+}
+
+const CFBD_GAME_ATTEMPTS = 3;
+
+async function fetchCFBDGamesEndpoint(endpoint: string, key: string): Promise<CFBDGame[]> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < CFBD_GAME_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
+      if (!response.ok) {
+        const retryable = response.status === 429 || response.status >= 500;
+        if (!retryable || attempt === CFBD_GAME_ATTEMPTS - 1) {
+          console.error(`CFBD games request failed after retries: ${endpoint} (${response.status})`);
+          throw new Error(`CFBD request failed: ${response.status}`);
+        }
+        await delayForRetry(response, attempt);
+        continue;
+      }
+      const data: unknown = await response.json();
+      if (!Array.isArray(data)) throw new Error('Invalid CFBD games response');
+      return data as CFBDGame[];
+    } catch (error) {
+      lastError = error;
+      if (error instanceof Error && error.message.startsWith('CFBD request failed:')) throw error;
+      if (attempt === CFBD_GAME_ATTEMPTS - 1) {
+        console.error(`CFBD games request failed after retries: ${endpoint} (network error)`);
+        throw error;
+      }
+      await delayForRetry(undefined, attempt);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('CFBD games request failed');
+}
+
+async function delayForRetry(response: Response | undefined, attempt: number): Promise<void> {
+  const retryAfter = response?.headers.get('Retry-After');
+  const seconds = retryAfter && /^\d+(?:\.\d+)?$/.test(retryAfter) ? Number(retryAfter) : 0;
+  const delay = Math.min(seconds ? seconds * 1000 : 100 * (attempt + 1), 1000);
+  await new Promise(resolve => setTimeout(resolve, delay));
 }
 
 async function fetchCFBDMedia(season: number, week: string, key: string): Promise<Map<string, string>> {

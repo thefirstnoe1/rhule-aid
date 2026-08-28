@@ -315,6 +315,61 @@ describe('CFBD division views', () => {
     expect(body.games[0]?.awayTeam.rank).toBeUndefined();
   });
 
+  it('recovers from a transient CFBD games failure', async () => {
+    let attempts = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
+      if (url.includes('/games?')) {
+        attempts++;
+        if (attempts === 1) return new Response('busy', { status: 503 });
+        return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      }
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: unknown[] };
+    expect(response.status).toBe(200);
+    expect(body.games).toHaveLength(1);
+    expect(attempts).toBe(2);
+  });
+
+  it('retries unclassified games when the FBS classification request fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }, { id: 3, classification: 'fcs' }, { id: 4, classification: 'fcs' }]), { status: 200 });
+      if (url.includes('/games?')) return url.includes('classification=fbs')
+        ? new Response('unsupported', { status: 400 })
+        : new Response(JSON.stringify([cfbdGame(1, 1, 2), cfbdGame(2, 3, 4)]), { status: 200 });
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ id: string }> };
+    expect(response.status).toBe(200);
+    expect(body.games.map(game => game.id)).toEqual(['1']);
+    expect(vi.mocked(fetch).mock.calls.filter(call => String(call[0]).includes('/games?'))).toHaveLength(2);
+  });
+
+  it('waits for exhausted CFBD game retries before Core fallback', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/games?')) return new Response('unavailable', { status: 503 });
+      if (url.includes('/events?')) return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context('all'));
+    const gamesAttempts = vi.mocked(fetch).mock.calls.filter(call => String(call[0]).includes('/games?'));
+    const coreAttempt = vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/events?'));
+    expect(response.status).toBe(502);
+    expect(gamesAttempts).toHaveLength(3);
+    expect(coreAttempt).toBeDefined();
+  });
+
   it('requests all CFBD media and normalizes streaming ESPN+', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
