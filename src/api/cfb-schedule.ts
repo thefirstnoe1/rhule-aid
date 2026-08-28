@@ -24,7 +24,7 @@ interface CFBDGame {
 interface CFBDMedia { id?: number | string; outlet?: string }
 interface CFBDCalendarEntry { week?: number | string; seasonType?: string }
 interface CFBDRankingEntry { rank?: number | string; school?: string; team?: string; name?: string }
-interface CFBDPoll { poll?: string; ranks?: CFBDRankingEntry[] }
+interface CFBDPoll { poll?: string; week?: number | string; seasonType?: string; ranks?: CFBDRankingEntry[] }
 interface CFBDLine { provider?: string; spread?: number | string | null; formattedSpread?: string | null }
 interface CFBDLinesGame { id?: number | string; lines?: CFBDLine[] }
 type FBSTeamMetadata = { ids: Set<number>; fcsIds: Set<number>; conferences: Map<number, string>; alternateNames: Map<number, string[]> };
@@ -61,7 +61,7 @@ interface CoreCompetitor { homeAway: 'home' | 'away'; score?: unknown; team?: { 
 const CFBD_BASE = 'https://api.collegefootballdata.com/games';
 const CFBD_LINES_BASE = 'https://api.collegefootballdata.com/lines';
 const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football';
-const CACHE_SCHEMA = 'v18';
+const CACHE_SCHEMA = 'v20';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
 const CALENDAR_CACHE_TTL = 86400;
@@ -210,26 +210,37 @@ async function fetchCFBDCalendar(env: Context['env'], season: number, key: strin
 }
 
 async function fetchCFBDRankings(env: Context['env'], season: number, week: string, key: string): Promise<Map<string, number> | null> {
-  const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:rankings:ap:${season}:${week}`;
+  const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:rankings:ap:${season}`;
   try {
+    let snapshots: CFBDPoll[] | null = null;
     const cached = await env.CFB_SCHEDULE_CACHE?.get(cacheKey);
     if (cached) {
-      const data = JSON.parse(cached) as { rankings?: Array<{ name: string; rank: number }> };
-      if (Array.isArray(data.rankings)) return new Map(data.rankings.map(item => [item.name, item.rank]));
+      const data = JSON.parse(cached) as { snapshots?: CFBDPoll[] };
+      if (Array.isArray(data.snapshots)) snapshots = data.snapshots;
     }
-    const params = new URLSearchParams({ year: String(season), week, seasonType: 'regular' });
-    const response = await fetch(`https://api.collegefootballdata.com/rankings?${params}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
-    if (!response.ok) throw new Error(`CFBD rankings failed: ${response.status}`);
-    const data: unknown = await response.json();
-    if (!Array.isArray(data)) throw new Error('Invalid CFBD rankings response');
-    const poll = (data as CFBDPoll[]).find(candidate => candidate.poll === 'AP Top 25');
-    if (!poll?.ranks?.length) return new Map();
-    const rankings = poll.ranks.flatMap(entry => {
+    const params = new URLSearchParams({ year: String(season), poll: 'ap' });
+    if (!snapshots) {
+      const response = await fetch(`https://api.collegefootballdata.com/rankings?${params}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
+      if (!response.ok) throw new Error(`CFBD rankings failed: ${response.status}`);
+      const data: unknown = await response.json();
+      if (!Array.isArray(data)) throw new Error('Invalid CFBD rankings response');
+      snapshots = data as CFBDPoll[];
+      await env.CFB_SCHEDULE_CACHE?.put(cacheKey, JSON.stringify({ snapshots }), { expirationTtl: RANKINGS_CACHE_TTL });
+    }
+    const targetWeek = Number(week);
+    const available = snapshots.filter(snapshot => snapshot.poll === 'AP Top 25' &&
+      (!snapshot.seasonType || snapshot.seasonType.toLowerCase() !== 'postseason') &&
+      Number.isFinite(Number(snapshot.week)) && Array.isArray(snapshot.ranks));
+    if (!available.length) return new Map();
+    const exact = available.find(snapshot => Number(snapshot.week) === targetWeek);
+    const prior = available.filter(snapshot => Number(snapshot.week) < targetWeek).sort((a, b) => Number(b.week) - Number(a.week))[0];
+    const selected = exact || prior || available.sort((a, b) => Number(a.week) - Number(b.week))[0];
+    if (!selected) return new Map();
+    const rankings = selected.ranks!.flatMap(entry => {
       const name = entry.school || entry.team || entry.name;
       const rank = Number(entry.rank);
       return name && Number.isInteger(rank) && rank > 0 && rank <= 25 ? [[normalizeTeamName(name), rank] as [string, number]] : [];
     });
-    await env.CFB_SCHEDULE_CACHE?.put(cacheKey, JSON.stringify({ rankings: rankings.map(([name, rank]) => ({ name, rank })) }), { expirationTtl: RANKINGS_CACHE_TTL });
     return new Map(rankings);
   } catch (error) {
     console.warn('CFBD AP rankings unavailable; retaining unranked teams:', error);
