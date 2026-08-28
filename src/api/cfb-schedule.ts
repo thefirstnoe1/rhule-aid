@@ -59,7 +59,7 @@ interface CoreCompetitor { homeAway: 'home' | 'away'; score?: unknown; team?: { 
 const CFBD_BASE = 'https://api.collegefootballdata.com/games';
 const CFBD_LINES_BASE = 'https://api.collegefootballdata.com/lines';
 const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football';
-const CACHE_SCHEMA = 'v16';
+const CACHE_SCHEMA = 'v17';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
 const CALENDAR_CACHE_TTL = 86400;
