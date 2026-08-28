@@ -336,6 +336,40 @@ describe('CFBD division views', () => {
     expect(attempts).toBe(2);
   });
 
+  it('uses season-wide CFBD games when the targeted week response is empty', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
+      if (url.includes('/games?')) return url.includes('week=')
+        ? new Response('[]', { status: 200 })
+        : new Response(JSON.stringify([cfbdGame(1), { ...cfbdGame(2), week: 2 }]), { status: 200 });
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ id: string }> };
+    expect(response.status).toBe(200);
+    expect(body.games.map(game => game.id)).toEqual(['1']);
+  });
+
+  it('does not request season-wide games when targeted CFBD games are present', async () => {
+    let gameRequests = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
+      if (url.includes('/games?')) {
+        gameRequests++;
+        return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      }
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    await onRequest(context());
+    expect(gameRequests).toBe(1);
+  });
+
   it('retries unclassified games when the FBS classification request fails', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

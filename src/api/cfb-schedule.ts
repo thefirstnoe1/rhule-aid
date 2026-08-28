@@ -63,7 +63,7 @@ interface CoreCompetitor { homeAway: 'home' | 'away'; score?: unknown; team?: { 
 const CFBD_BASE = 'https://api.collegefootballdata.com/games';
 const CFBD_LINES_BASE = 'https://api.collegefootballdata.com/lines';
 const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football';
-const CACHE_SCHEMA = 'v23';
+const CACHE_SCHEMA = 'v24';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
 const CALENDAR_CACHE_TTL = 86400;
@@ -134,16 +134,29 @@ export async function onRequest(context: Context): Promise<Response> {
 async function fetchCFBD(season: number, week: string, key: string, division: 'fbs' | 'all'): Promise<CFBDGame[]> {
   const params = new URLSearchParams({ year: String(season), seasonType: 'regular', week });
   if (division === 'fbs') params.set('classification', 'fbs');
-  const endpoint = `${CFBD_BASE}?${params}`;
   try {
-    return await fetchCFBDGamesEndpoint(endpoint, key);
+    return await fetchCFBDGamesWithSeasonFallback(params, week, key);
   } catch (error) {
     if (division !== 'fbs') throw error;
     // Some CFBD deployments reject classification=fbs. Retry the unclassified
     // endpoint so local team metadata can still enforce the FBS boundary.
     params.delete('classification');
-    return fetchCFBDGamesEndpoint(`${CFBD_BASE}?${params}`, key);
+    return fetchCFBDGamesWithSeasonFallback(params, week, key);
   }
+}
+
+async function fetchCFBDGamesWithSeasonFallback(params: URLSearchParams, week: string, key: string): Promise<CFBDGame[]> {
+  const targetedEndpoint = `${CFBD_BASE}?${params}`;
+  const targeted = await fetchCFBDGamesEndpoint(targetedEndpoint, key);
+  if (targeted.length) return targeted;
+
+  const seasonParams = new URLSearchParams(params);
+  seasonParams.delete('week');
+  const seasonEndpoint = `${CFBD_BASE}?${seasonParams}`;
+  const seasonGames = await fetchCFBDGamesEndpoint(seasonEndpoint, key);
+  const matchingGames = seasonGames.filter(game => String(game.week) === week);
+  if (!matchingGames.length) console.warn(`CFBD games empty for week ${week}: targeted and season sources returned no matching games`);
+  return matchingGames;
 }
 
 const CFBD_GAME_ATTEMPTS = 3;
