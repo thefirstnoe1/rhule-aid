@@ -69,6 +69,7 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
   const [timezone, setTimezone] = useState('America/Chicago');
   const [layout, setLayout] = useState<LayoutMode>('cards');
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [noSpoilers, setNoSpoilers] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(Boolean(initialData.error));
   const [announcement, setAnnouncement] = useState(initialData.error ? 'Unable to load schedule data.' : '');
@@ -256,15 +257,26 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
           </div>
         </div>
         <div className="flex justify-end border-t border-[var(--border)] px-4 py-3 md:px-5">
-          <button
-            type="button"
-            onClick={() => setAutoRefresh((enabled) => !enabled)}
-            aria-pressed={autoRefresh}
-            aria-label="Automatic live score updates"
-            className={`rounded-full border px-3 py-1.5 text-[0.65rem] font-black uppercase tracking-[0.14em] transition ${autoRefresh ? 'border-[var(--border)] bg-[var(--surface-strong)] text-[var(--muted)] hover:border-[var(--scarlet)] hover:text-[var(--scarlet)]' : 'border-[var(--border)] bg-[var(--surface-strong)] text-[var(--muted)] hover:text-[var(--foreground)]'}`}
-          >
-            Auto live updates: {autoRefresh ? 'On' : 'Off'}
-          </button>
+          <div className="flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setAutoRefresh((enabled) => !enabled)}
+              aria-pressed={autoRefresh}
+              aria-label="Automatic live score updates"
+              className="rounded-full border border-[var(--border)] bg-[var(--surface-strong)] px-3 py-1.5 text-[0.65rem] font-black uppercase tracking-[0.14em] text-[var(--muted)] transition hover:border-[var(--scarlet)] hover:text-[var(--scarlet)]"
+            >
+              Auto live updates: {autoRefresh ? 'On' : 'Off'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setNoSpoilers((enabled) => !enabled)}
+              aria-pressed={noSpoilers}
+              aria-label="Hide game scores"
+              className={`rounded-full border px-3 py-1.5 text-[0.65rem] font-black uppercase tracking-[0.14em] transition ${noSpoilers ? 'border-[var(--scarlet)] bg-[color-mix(in_srgb,var(--scarlet)_12%,var(--surface-strong))] text-[var(--scarlet)]' : 'border-[var(--border)] bg-[var(--surface-strong)] text-[var(--muted)] hover:border-[var(--scarlet)] hover:text-[var(--scarlet)]'}`}
+            >
+              No spoilers: {noSpoilers ? 'On' : 'Off'}
+            </button>
+          </div>
         </div>
       </SurfaceCard>
 
@@ -286,7 +298,7 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
 
       <div className="grid gap-8">
         {Object.keys(gamesByDate).sort().map((date) => (
-          <DateSection key={date} date={date} games={gamesByDate[date] || []} timezone={timezone} layout={layout} />
+          <DateSection key={date} date={date} games={gamesByDate[date] || []} timezone={timezone} layout={layout} noSpoilers={noSpoilers} />
         ))}
       </div>
     </div>
@@ -320,7 +332,7 @@ function PillSelect({ id, label, value, onChange, disabled = false, children }: 
   );
 }
 
-function DateSection({ date, games, timezone, layout }: { date: string; games: Game[]; timezone: string; layout: LayoutMode }) {
+function DateSection({ date, games, timezone, layout, noSpoilers }: { date: string; games: Game[]; timezone: string; layout: LayoutMode; noSpoilers: boolean }) {
   const formattedDate = formatDate(date);
   const sortedGames = [...games].sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime());
 
@@ -332,16 +344,16 @@ function DateSection({ date, games, timezone, layout }: { date: string; games: G
       </div>
       <div className={layout === 'cards' ? 'grid gap-4 xl:grid-cols-2' : layout === 'compact' ? 'grid gap-2' : 'grid gap-3 md:grid-cols-2 xl:grid-cols-3'}>
         {sortedGames.map((game) => {
-          if (layout === 'compact') return <CompactGame key={game.id} game={game} timezone={timezone} />;
-          if (layout === 'tv') return <TVGame key={game.id} game={game} timezone={timezone} />;
-          return <GameCard key={game.id} game={game} timezone={timezone} />;
+          if (layout === 'compact') return <CompactGame key={game.id} game={game} timezone={timezone} noSpoilers={noSpoilers} />;
+          if (layout === 'tv') return <TVGame key={game.id} game={game} timezone={timezone} noSpoilers={noSpoilers} />;
+          return <GameCard key={game.id} game={game} timezone={timezone} noSpoilers={noSpoilers} />;
         })}
       </div>
     </section>
   );
 }
 
-function GameCard({ game, timezone }: { game: Game; timezone: string }) {
+function GameCard({ game, timezone, noSpoilers }: { game: Game; timezone: string; noSpoilers: boolean }) {
   const status = getGameStatus(game);
 
   return (
@@ -358,9 +370,9 @@ function GameCard({ game, timezone }: { game: Game; timezone: string }) {
         </div>
 
         <div className="grid gap-3">
-          <TeamRow team={game.awayTeam} showScore={status !== 'scheduled'} winner={status !== 'scheduled' && game.awayTeam.score > game.homeTeam.score} />
+          <TeamRow team={game.awayTeam} showScore={!noSpoilers && status !== 'scheduled'} winner={!noSpoilers && status !== 'scheduled' && game.awayTeam.score > game.homeTeam.score} />
           <div className="px-2 text-xs font-black uppercase tracking-[0.18em] text-[var(--muted)]">at</div>
-          <TeamRow team={game.homeTeam} showScore={status !== 'scheduled'} winner={status !== 'scheduled' && game.homeTeam.score > game.awayTeam.score} />
+          <TeamRow team={game.homeTeam} showScore={!noSpoilers && status !== 'scheduled'} winner={!noSpoilers && status !== 'scheduled' && game.homeTeam.score > game.awayTeam.score} />
         </div>
 
         <div className="grid gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-strong)] p-4 text-sm sm:grid-cols-2">
@@ -379,7 +391,7 @@ function GameCard({ game, timezone }: { game: Game; timezone: string }) {
   );
 }
 
-function CompactGame({ game, timezone }: { game: Game; timezone: string }) {
+function CompactGame({ game, timezone, noSpoilers }: { game: Game; timezone: string; noSpoilers: boolean }) {
   const status = getGameStatus(game);
 
   return (
@@ -387,9 +399,9 @@ function CompactGame({ game, timezone }: { game: Game; timezone: string }) {
       <div className="grid gap-3 md:grid-cols-[7rem_1fr_7rem_8rem] md:items-center">
         <div className="text-sm font-black">{formatGameTime(game, timezone)}</div>
         <div className="grid gap-2 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
-          <MiniTeam team={game.awayTeam} align="left" />
+          <MiniTeam team={game.awayTeam} align="left" showScore={!noSpoilers} />
           <span className="hidden text-xs font-black uppercase tracking-[0.16em] text-[var(--muted)] sm:block">at</span>
-          <MiniTeam team={game.homeTeam} align="right" />
+          <MiniTeam team={game.homeTeam} align="right" showScore={!noSpoilers} />
         </div>
         <div className="text-xs font-black uppercase tracking-[0.14em] text-[var(--muted)] md:text-center">{game.tv}</div>
         <div className={`rounded-full px-3 py-1 text-center text-xs font-black uppercase tracking-[0.14em] ${status === 'live' ? 'bg-[var(--scarlet)] text-white' : 'border border-[var(--border)] text-[var(--muted)]'}`}>{game.status}</div>
@@ -398,7 +410,7 @@ function CompactGame({ game, timezone }: { game: Game; timezone: string }) {
   );
 }
 
-function TVGame({ game, timezone }: { game: Game; timezone: string }) {
+function TVGame({ game, timezone, noSpoilers }: { game: Game; timezone: string; noSpoilers: boolean }) {
   const status = getGameStatus(game);
 
   return (
@@ -408,15 +420,15 @@ function TVGame({ game, timezone }: { game: Game; timezone: string }) {
         <div className={status === 'live' ? 'text-xs font-black uppercase tracking-[0.14em] text-[var(--scarlet)]' : 'text-xs font-black uppercase tracking-[0.14em] text-[var(--muted)]'}>{formatGameTime(game, timezone)}</div>
       </div>
       <div className="grid gap-3 p-4">
-        <MiniTeam team={game.awayTeam} />
-        <MiniTeam team={game.homeTeam} />
+        <MiniTeam team={game.awayTeam} showScore={!noSpoilers} />
+        <MiniTeam team={game.homeTeam} showScore={!noSpoilers} />
         <div className="truncate text-xs font-bold text-[var(--muted)]">{game.venue}</div>
       </div>
     </SurfaceCard>
   );
 }
 
-function MiniTeam({ team, align = 'left' }: { team: Team; align?: 'left' | 'right' }) {
+function MiniTeam({ team, align = 'left', showScore = true }: { team: Team; align?: 'left' | 'right'; showScore?: boolean }) {
   return (
     <div className={`flex items-center gap-2 ${align === 'right' ? 'sm:justify-end' : ''}`}>
       <img src={team.logo || '/images/logos/default-logo.png'} alt="" className="h-7 w-7 rounded-full bg-white object-contain p-1" loading="lazy" />
@@ -424,7 +436,7 @@ function MiniTeam({ team, align = 'left' }: { team: Team; align?: 'left' | 'righ
         {team.rank && team.rank <= 25 && <span className="mr-1 text-[var(--scarlet)]">#{team.rank}</span>}
         {team.shortName || team.name}
       </span>
-      <span className="text-sm font-black">{team.score || ''}</span>
+      {showScore && <span className="text-sm font-black">{team.score || ''}</span>}
     </div>
   );
 }
