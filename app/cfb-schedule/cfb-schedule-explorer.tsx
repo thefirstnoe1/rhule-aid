@@ -65,7 +65,7 @@ const layoutModes: Array<{ value: LayoutMode; label: string }> = [
 
 export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleData }) {
   const [scheduleData, setScheduleData] = useState(initialData);
-  const [filters, setFilters] = useState<Filters>({ week: '', conference: '', division: 'FBS_FCS', status: '', rankedOnly: false });
+  const [filters, setFilters] = useState<Filters>({ week: initialData.weeks[0]?.value || '', conference: '', division: 'FBS_FCS', status: '', rankedOnly: false });
   const [timezone, setTimezone] = useState('America/Chicago');
   const [layout, setLayout] = useState<LayoutMode>('cards');
   const [loading, setLoading] = useState(false);
@@ -137,13 +137,15 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
       if (data.error) throw new Error(data.error);
       if (requestId !== requestIdRef.current) return;
 
+      const returnedWeeks = Array.isArray(data.weeks) ? data.weeks : [];
+      const selectedWeek = week || returnedWeeks[0]?.value || '';
       setScheduleData({
         games: Array.isArray(data.games) ? data.games : [],
-        weeks: Array.isArray(data.weeks) ? data.weeks : [],
+        weeks: returnedWeeks,
         lastUpdated: data.lastUpdated,
         hasLiveGames: Boolean(data.hasLiveGames)
       });
-      setFilters((current) => ({ ...current, week }));
+      setFilters((current) => ({ ...current, week: selectedWeek }));
       setAnnouncement(week ? `Week ${week} loaded.` : 'Current board refreshed.');
     } catch (loadError) {
       console.error('Error loading CFB schedule:', loadError);
@@ -188,7 +190,6 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
         <div className="grid gap-4 p-4 md:p-5 xl:grid-cols-[1fr_auto] xl:items-center">
           <div className="flex flex-wrap gap-2">
             <PillSelect id="cfb-week" label="Week" value={filters.week} onChange={selectWeek} disabled={loading}>
-              <option value="">Current Board</option>
               {scheduleData.weeks.map((week) => <option key={week.value} value={week.value}>{week.label}</option>)}
             </PillSelect>
 
