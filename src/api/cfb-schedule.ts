@@ -22,6 +22,7 @@ interface CFBDGame {
   awaySubdivision?: string;
 }
 interface CFBDMedia { id?: number | string; outlet?: string }
+interface CFBDCalendarEntry { week?: number | string; seasonType?: string }
 interface CFBDLine { provider?: string; spread?: number | string | null; formattedSpread?: string | null }
 interface CFBDLinesGame { id?: number | string; lines?: CFBDLine[] }
 type FBSTeamMetadata = { ids: Set<number>; fcsIds: Set<number>; conferences: Map<number, string> };
@@ -61,6 +62,7 @@ const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/c
 const CACHE_SCHEMA = 'v16';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
+const CALENDAR_CACHE_TTL = 86400;
 
 export async function onRequest(context: Context): Promise<Response> {
   const { request, env } = context;
@@ -74,14 +76,17 @@ export async function onRequest(context: Context): Promise<Response> {
   if (cached) return jsonResponse(cached, 200, 900);
 
   let games: ScheduleMatch[] = [];
+  let calendarWeeks: ScheduleWeek[] | null = null;
   if (env.CFBD_API_KEY) {
     try {
-      const [cfbdGames, fbsTeams, media, lines] = await Promise.all([
+      const [cfbdGames, fbsTeams, media, lines, calendar] = await Promise.all([
         fetchCFBD(season, week, env.CFBD_API_KEY, division),
         getFBSTeamMetadata(env, season, env.CFBD_API_KEY),
         fetchCFBDMedia(season, week, env.CFBD_API_KEY),
         fetchCFBDLines(season, week, env.CFBD_API_KEY),
+        fetchCFBDCalendar(env, season, env.CFBD_API_KEY),
       ]);
+      calendarWeeks = calendar;
       games = cfbdGames.map(game => normalizeCFBDGame(game, season, week, fbsTeams, media, lines)).filter(isGame).sort(sortGames);
       if (division === 'fbs' && fbsTeams) {
         games = games.filter(game => {
@@ -114,7 +119,7 @@ export async function onRequest(context: Context): Promise<Response> {
 
   if (games.length === 0) return jsonResponse({ games: [], weeks: [], lastUpdated: new Date().toISOString(), hasLiveGames: false, error: 'Schedule data unavailable from CFBD and ESPN' }, 502, 0);
 
-  const result = makeResult(games, week);
+  const result = makeResult(games, week, calendarWeeks || [{ label: `Week ${week}`, value: week }]);
   const ttl = result.hasLiveGames ? 60 : 900;
   await writeCache(env, cacheKey, result, ttl);
   return jsonResponse(result, 200, ttl);
@@ -147,6 +152,35 @@ async function fetchCFBDMedia(season: number, week: string, key: string): Promis
   } catch (error) {
     console.warn('CFBD game media unavailable; retaining TBD TV values:', error);
     return new Map();
+  }
+}
+
+interface ScheduleWeek { label: string; value: string }
+
+async function fetchCFBDCalendar(env: Context['env'], season: number, key: string): Promise<ScheduleWeek[] | null> {
+  const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:calendar:${season}`;
+  try {
+    const cached = await env.CFB_SCHEDULE_CACHE?.get(cacheKey);
+    if (cached) {
+      const data = JSON.parse(cached) as { weeks?: ScheduleWeek[] };
+      if (Array.isArray(data.weeks) && data.weeks.length) return data.weeks;
+    }
+    const params = new URLSearchParams({ year: String(season), seasonType: 'regular' });
+    const response = await fetch(`https://api.collegefootballdata.com/calendar?${params}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
+    if (!response.ok) throw new Error(`CFBD calendar failed: ${response.status}`);
+    const data: unknown = await response.json();
+    if (!Array.isArray(data)) throw new Error('Invalid CFBD calendar response');
+    const values = [...new Set(data.flatMap(row => {
+      const entry = row as CFBDCalendarEntry;
+      return entry.seasonType && entry.seasonType.toLowerCase() !== 'regular' ? [] : entry.week === undefined ? [] : [String(entry.week).trim()];
+    }).filter(value => /^\d+$/.test(value)))].sort((a, b) => Number(a) - Number(b));
+    if (!values.length) throw new Error('CFBD calendar response had no regular-season weeks');
+    const weeks = values.map(value => ({ label: `Week ${value}`, value }));
+    await env.CFB_SCHEDULE_CACHE?.put(cacheKey, JSON.stringify({ weeks }), { expirationTtl: CALENDAR_CACHE_TTL });
+    return weeks;
+  } catch (error) {
+    console.warn('CFBD calendar unavailable; retaining requested week:', error);
+    return null;
   }
 }
 
@@ -393,7 +427,7 @@ function extractBroadcastNames(broadcasts?: Array<{ names?: string[] }>): string
   return unique.find(name => name === 'ESPN+') || unique.join(', ') || null;
 }
 
-function makeResult(games: ScheduleMatch[], week: string) { return { games, weeks: [{ label: `Week ${week}`, value: week }], lastUpdated: new Date().toISOString(), hasLiveGames: games.some(game => !game.isCompleted && /q|half|ot|quarter/i.test(game.status)) }; }
+function makeResult(games: ScheduleMatch[], week: string, weeks: ScheduleWeek[]) { return { games, weeks, lastUpdated: new Date().toISOString(), hasLiveGames: games.some(game => !game.isCompleted && /q|half|ot|quarter/i.test(game.status)) }; }
 async function readCache(env: Context['env'], key: string): Promise<any | null> { if (!env.CFB_SCHEDULE_CACHE) return null; try { const value = await env.CFB_SCHEDULE_CACHE.get(key); return value ? JSON.parse(value) : null; } catch { return null; } }
 async function writeCache(env: Context['env'], key: string, value: unknown, ttl: number): Promise<void> { if (env.CFB_SCHEDULE_CACHE && Array.isArray((value as { games?: unknown[] }).games) && (value as { games: unknown[] }).games.length) try { await env.CFB_SCHEDULE_CACHE.put(key, JSON.stringify(value), { expirationTtl: ttl }); } catch (error) { console.warn('Failed to write CFB schedule cache:', error); } }
 function jsonResponse(body: unknown, status: number, maxAge: number): Response { return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': maxAge ? `public, max-age=${maxAge}` : 'no-store' } }); }

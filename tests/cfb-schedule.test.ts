@@ -137,6 +137,42 @@ describe('CFBD division views', () => {
     expect(String(vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/games'))?.[0])).toContain('classification=fbs');
   });
 
+  it('returns all ordered regular-season weeks from the CFBD calendar', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
+      if (url.includes('/calendar?')) return new Response(JSON.stringify([
+        { week: 3, seasonType: 'regular' }, { week: 1, seasonType: 'regular' },
+        { week: 2, seasonType: 'regular' }, { week: 15, seasonType: 'postseason' },
+      ]), { status: 200 });
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { weeks: Array<{ label: string; value: string }> };
+    expect(body.weeks).toEqual([
+      { label: 'Week 1', value: '1' }, { label: 'Week 2', value: '2' }, { label: 'Week 3', value: '3' },
+    ]);
+    expect(String(vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/calendar?'))?.[0])).toContain('seasonType=regular');
+  });
+
+  it('falls back to requested week when the CFBD calendar fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
+      if (url.includes('/calendar?')) return new Response('unavailable', { status: 503 });
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { weeks: Array<{ label: string; value: string }> };
+    expect(body.weeks).toEqual([{ label: 'Week 1', value: '1' }]);
+  });
+
   it('requests unfiltered data and includes FCS games for division=all', async () => {
     const response = await onRequest(context('all'));
     const body = await response.json() as { games: unknown[] };
