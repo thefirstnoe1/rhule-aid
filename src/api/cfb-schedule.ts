@@ -24,7 +24,9 @@ interface CFBDGame {
 interface CFBDMedia { id?: number | string; outlet?: string }
 interface CFBDCalendarEntry { week?: number | string; seasonType?: string }
 interface CFBDRankingEntry { rank?: number | string; school?: string; team?: string; name?: string }
-interface CFBDPoll { poll?: string; week?: number | string; seasonType?: string; ranks?: CFBDRankingEntry[] }
+interface CFBDPoll { poll?: string; ranks?: CFBDRankingEntry[] }
+interface CFBDPollWeek { season?: number; seasonType?: string; week?: number | string; polls?: CFBDPoll[] }
+interface CFBDRankSnapshot { week?: number | string; seasonType?: string; poll?: string; ranks?: CFBDRankingEntry[] }
 interface CFBDLine { provider?: string; spread?: number | string | null; formattedSpread?: string | null }
 interface CFBDLinesGame { id?: number | string; lines?: CFBDLine[] }
 type FBSTeamMetadata = { ids: Set<number>; fcsIds: Set<number>; conferences: Map<number, string>; alternateNames: Map<number, string[]> };
@@ -61,7 +63,7 @@ interface CoreCompetitor { homeAway: 'home' | 'away'; score?: unknown; team?: { 
 const CFBD_BASE = 'https://api.collegefootballdata.com/games';
 const CFBD_LINES_BASE = 'https://api.collegefootballdata.com/lines';
 const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football';
-const CACHE_SCHEMA = 'v20';
+const CACHE_SCHEMA = 'v21';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
 const CALENDAR_CACHE_TTL = 86400;
@@ -212,10 +214,10 @@ async function fetchCFBDCalendar(env: Context['env'], season: number, key: strin
 async function fetchCFBDRankings(env: Context['env'], season: number, week: string, key: string): Promise<Map<string, number> | null> {
   const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:rankings:ap:${season}`;
   try {
-    let snapshots: CFBDPoll[] | null = null;
+    let snapshots: CFBDRankSnapshot[] | null = null;
     const cached = await env.CFB_SCHEDULE_CACHE?.get(cacheKey);
     if (cached) {
-      const data = JSON.parse(cached) as { snapshots?: CFBDPoll[] };
+      const data = JSON.parse(cached) as { snapshots?: CFBDRankSnapshot[] };
       if (Array.isArray(data.snapshots)) snapshots = data.snapshots;
     }
     const params = new URLSearchParams({ year: String(season), poll: 'ap' });
@@ -224,7 +226,13 @@ async function fetchCFBDRankings(env: Context['env'], season: number, week: stri
       if (!response.ok) throw new Error(`CFBD rankings failed: ${response.status}`);
       const data: unknown = await response.json();
       if (!Array.isArray(data)) throw new Error('Invalid CFBD rankings response');
-      snapshots = data as CFBDPoll[];
+      const pollWeeks = data as CFBDPollWeek[];
+      snapshots = pollWeeks.flatMap(pollWeek => (pollWeek.polls || []).map(poll => ({
+        week: pollWeek.week,
+        seasonType: pollWeek.seasonType,
+        poll: poll.poll,
+        ranks: poll.ranks,
+      })));
       await env.CFB_SCHEDULE_CACHE?.put(cacheKey, JSON.stringify({ snapshots }), { expirationTtl: RANKINGS_CACHE_TTL });
     }
     const targetWeek = Number(week);

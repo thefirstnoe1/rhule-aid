@@ -246,8 +246,7 @@ describe('CFBD division views', () => {
       const url = String(input);
       if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
       if (url.includes('/rankings?')) return new Response(JSON.stringify([
-        { poll: 'Coaches Poll', ranks: [{ rank: 1, school: 'Nebraska' }] },
-        { poll: 'AP Top 25', week: 1, ranks: [{ rank: 7, school: 'Nebraska Cornhuskers' }] },
+        { week: 1, seasonType: 'regular', polls: [{ poll: 'Coaches Poll', ranks: [{ rank: 1, school: 'Nebraska' }] }, { poll: 'AP Top 25', ranks: [{ rank: 7, school: 'Nebraska Cornhuskers' }] }] },
       ]), { status: 200 });
       if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
       if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
@@ -265,9 +264,9 @@ describe('CFBD division views', () => {
       const url = String(input);
       if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
       if (url.includes('/rankings?')) return new Response(JSON.stringify([
-        { poll: 'AP Top 25', week: 0, seasonType: 'regular', ranks: [{ rank: 11, school: 'Nebraska' }] },
-        { poll: 'AP Top 25', week: 2, seasonType: 'regular', ranks: [{ rank: 2, school: 'Nebraska' }] },
-        { poll: 'AP Top 25', week: 1, seasonType: 'postseason', ranks: [{ rank: 1, school: 'Nebraska' }] },
+        { week: 0, seasonType: 'regular', polls: [{ poll: 'AP Top 25', ranks: [{ rank: 11, school: 'Nebraska' }] }] },
+        { week: 2, seasonType: 'regular', polls: [{ poll: 'AP Top 25', ranks: [{ rank: 2, school: 'Nebraska' }] }] },
+        { week: 1, seasonType: 'postseason', polls: [{ poll: 'AP Top 25', ranks: [{ rank: 1, school: 'Nebraska' }] }] },
       ]), { status: 200 });
       if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
       if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
@@ -284,8 +283,8 @@ describe('CFBD division views', () => {
       const url = String(input);
       if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
       if (url.includes('/rankings?')) return new Response(JSON.stringify([
-        { poll: 'AP Top 25', week: 1, seasonType: 'regular', ranks: [{ rank: 7, school: 'Nebraska' }] },
-        { poll: 'AP Top 25', week: 3, seasonType: 'regular', ranks: [{ rank: 2, school: 'Nebraska' }] },
+        { week: 1, seasonType: 'regular', polls: [{ poll: 'AP Top 25', ranks: [{ rank: 7, school: 'Nebraska' }] }] },
+        { week: 3, seasonType: 'regular', polls: [{ poll: 'AP Top 25', ranks: [{ rank: 2, school: 'Nebraska' }] }] },
       ]), { status: 200 });
       if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
       if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
