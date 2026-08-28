@@ -241,6 +241,42 @@ describe('CFBD division views', () => {
     expect(body.games[0]?.tv).toBe('ESPN');
   });
 
+  it('adds AP Top 25 ranks and resolves provider name variants', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
+      if (url.includes('/rankings?')) return new Response(JSON.stringify([
+        { poll: 'Coaches Poll', ranks: [{ rank: 1, school: 'Nebraska' }] },
+        { poll: 'AP Top 25', ranks: [{ rank: 7, school: 'Nebraska Cornhuskers' }] },
+      ]), { status: 200 });
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ homeTeam: { rank?: number }; awayTeam: { rank?: number } }> };
+    expect(body.games[0]?.homeTeam.rank).toBe(7);
+    expect(body.games[0]?.awayTeam.rank).toBeUndefined();
+  });
+
+  it('leaves teams unranked when CFBD rankings are unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
+      if (url.includes('/rankings?')) return new Response('unavailable', { status: 503 });
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ homeTeam: { rank?: number }; awayTeam: { rank?: number } }> };
+    expect(response.status).toBe(200);
+    expect(body.games[0]?.homeTeam.rank).toBeUndefined();
+    expect(body.games[0]?.awayTeam.rank).toBeUndefined();
+  });
+
   it('requests all CFBD media and normalizes streaming ESPN+', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
