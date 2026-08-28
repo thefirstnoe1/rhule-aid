@@ -21,6 +21,10 @@ function cfbdGame(id: number, homeId = 1, awayId = 2) {
   };
 }
 
+function cfbdGameWithTime(id: number, startTimeTBD: boolean) {
+  return { ...cfbdGame(id), startTimeTBD };
+}
+
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -37,6 +41,93 @@ beforeEach(() => {
 });
 
 describe('CFBD division views', () => {
+  it('does not assign a kickoff time to CFBD TBD games', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGameWithTime(1, true)]), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ time: string }> };
+    expect(body.games[0]?.time).toBe('TBD');
+  });
+
+  it('normalizes confirmed CFBD kickoff time', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGameWithTime(1, false)]), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ time: string }> };
+    expect(body.games[0]?.time).toContain('1:00 PM');
+    expect(body.games[0]?.time).toContain('CDT');
+  });
+
+  it('keeps Core date-only events at TBD kickoff time', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('api.collegefootballdata.com')) return new Response('unavailable', { status: 503 });
+      if (url.includes('/events?')) return new Response(JSON.stringify({ items: [{ $ref: 'https://sports.core.api.espn.com/v2/events/1' }] }), { status: 200 });
+      if (url.includes('/events/1')) return new Response(JSON.stringify({
+        id: 'core-1', week: { number: 1 }, competitions: [{ date: '2025-09-01', competitors: [
+          { homeAway: 'home', team: { displayName: 'Nebraska', conferenceId: '7' } },
+          { homeAway: 'away', team: { displayName: 'Iowa', conferenceId: '7' } },
+        ] }],
+      }), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ time: string }> };
+    expect(body.games[0]?.time).toBe('TBD');
+  });
+
+  it('prefers formatted Consensus CFBD lines', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/games/media')) return new Response('[]', { status: 200 });
+      if (url.includes('/lines')) return new Response(JSON.stringify([{ id: 1, lines: [
+        { provider: 'DraftKings', spread: -3 },
+        { provider: 'Consensus', formattedSpread: 'Iowa -2.5' },
+      ] }]), { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ spread: string | null }> };
+    expect(body.games[0]?.spread).toBe('Iowa -2.5');
+  });
+
+  it('uses nonempty ESPN current odds over CFBD lines', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/games/media')) return new Response('[]', { status: 200 });
+      if (url.includes('/lines')) return new Response(JSON.stringify([{ id: 1, lines: [{ provider: 'Consensus', formattedSpread: 'Iowa -2.5' }] }]), { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      if (url.includes('/scoreboard?')) return new Response(JSON.stringify({ events: [{
+        id: 'espn-1', competitions: [{ competitors: [
+          { homeAway: 'home', team: { displayName: 'Nebraska' }, score: '0' },
+          { homeAway: 'away', team: { displayName: 'Iowa' }, score: '0' },
+        ], odds: [{ details: '' }, { details: 'Nebraska -4.5' }] }],
+      }] }), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ spread: string | null }> };
+    expect(body.games[0]?.spread).toBe('Nebraska -4.5');
+  });
+
   it('requests authoritative FBS data by default', async () => {
     const response = await onRequest(context());
     const body = await response.json() as { games: unknown[] };
@@ -77,6 +168,47 @@ describe('CFBD division views', () => {
     expect(body.games[0].tv).toBe('TBD');
   });
 
+  it('fills TBD TV with ESPN+ when broadcast names are supplied by ESPN', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      if (url.includes('/scoreboard?')) return new Response(JSON.stringify({ events: [{
+        id: 'espn-event-1', competitions: [{ competitors: [
+          { homeAway: 'home', team: { displayName: 'Nebraska Cornhuskers' }, score: '0' },
+          { homeAway: 'away', team: { displayName: 'Iowa Hawkeyes' }, score: '0' },
+        ], broadcasts: [{ names: ['ESPN'] }, { names: ['ESPN +'] }] }],
+      }] }), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ tv: string }> };
+    expect(body.games[0]?.tv).toBe('ESPN+');
+  });
+
+  it('does not overwrite CFBD media with ESPN broadcast overlay', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/games/media')) return new Response(JSON.stringify([{ id: 1, outlet: 'BTN' }]), { status: 200 });
+      if (url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
+      if (url.includes('/scoreboard?')) return new Response(JSON.stringify({ events: [{
+        id: 'different-espn-id', competitions: [{ competitors: [
+          { homeAway: 'home', team: { displayName: 'Nebraska Cornhuskers' } },
+          { homeAway: 'away', team: { displayName: 'Iowa Hawkeyes' } },
+        ], broadcasts: [{ names: ['ESPN+'] }] }],
+      }] }), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { games: Array<{ tv: string }> };
+    expect(body.games[0]?.tv).toBe('BTN');
+  });
+
   it('falls back permissively when the FBS team lookup fails', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).includes('/teams/fbs')
       ? new Response('unavailable', { status: 503 })
@@ -89,4 +221,5 @@ describe('CFBD division views', () => {
     expect(response.status).toBe(200);
     expect(body.games).toHaveLength(1);
   });
+
 });

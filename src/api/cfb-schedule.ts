@@ -18,6 +18,8 @@ interface CFBDGame {
   awayDivision?: string;
 }
 interface CFBDMedia { id?: number | string; outlet?: string }
+interface CFBDLine { provider?: string; spread?: number | string | null; formattedSpread?: string | null }
+interface CFBDLinesGame { id?: number | string; lines?: CFBDLine[] }
 type FBSTeamMetadata = { ids: Set<number>; conferences: Map<number, string> };
 
 type GameDivision = 'FBS' | 'FCS' | 'unknown';
@@ -50,8 +52,9 @@ interface CoreEvent { id: string; date?: string; name?: string; shortName?: stri
 interface CoreCompetitor { homeAway: 'home' | 'away'; score?: unknown; team?: { id?: string; displayName?: string; name?: string; abbreviation?: string; shortDisplayName?: string; conferenceId?: string; division?: string; subdivision?: string; classification?: string; logos?: Array<{ href?: string }> } }
 
 const CFBD_BASE = 'https://api.collegefootballdata.com/games';
+const CFBD_LINES_BASE = 'https://api.collegefootballdata.com/lines';
 const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football';
-const CACHE_SCHEMA = 'v10';
+const CACHE_SCHEMA = 'v14';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
 
@@ -69,12 +72,13 @@ export async function onRequest(context: Context): Promise<Response> {
   let games: ScheduleMatch[] = [];
   if (env.CFBD_API_KEY) {
     try {
-      const [cfbdGames, fbsTeams, media] = await Promise.all([
+      const [cfbdGames, fbsTeams, media, lines] = await Promise.all([
         fetchCFBD(season, week, env.CFBD_API_KEY, division),
         getFBSTeamMetadata(env, season, env.CFBD_API_KEY),
         fetchCFBDMedia(season, week, env.CFBD_API_KEY),
+        fetchCFBDLines(season, week, env.CFBD_API_KEY),
       ]);
-      games = cfbdGames.map(game => normalizeCFBDGame(game, season, week, fbsTeams?.conferences, media)).filter(isGame).sort(sortGames);
+      games = cfbdGames.map(game => normalizeCFBDGame(game, season, week, fbsTeams?.conferences, media, lines)).filter(isGame).sort(sortGames);
       if (division === 'fbs' && fbsTeams) {
         games = games.filter(game => {
           const classified = game as ClassifiedScheduleMatch;
@@ -140,6 +144,51 @@ async function fetchCFBDMedia(season: number, week: string, key: string): Promis
   }
 }
 
+const LINE_PROVIDER_PRIORITY = ['consensus', 'espn', 'draftkings', 'fanduel'];
+
+async function fetchCFBDLines(season: number, week: string, key: string): Promise<Map<string, string>> {
+  const params = new URLSearchParams({ year: String(season), seasonType: 'regular', week });
+  try {
+    const response = await fetch(`${CFBD_LINES_BASE}?${params}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
+    if (!response.ok) throw new Error(`CFBD lines failed: ${response.status}`);
+    const data: unknown = await response.json();
+    if (!Array.isArray(data)) throw new Error('Invalid CFBD lines response');
+    const selected = new Map<string, CFBDLine>();
+    for (const row of data) {
+      if (!row || typeof row !== 'object') continue;
+      const game = row as CFBDLinesGame;
+      if (game.id === undefined || !Array.isArray(game.lines)) continue;
+      for (const line of game.lines) {
+        if (!line?.provider || !normalizeSpread(line.formattedSpread, line.spread)) continue;
+        const current = selected.get(String(game.id));
+        if (!current || providerRank(line.provider) < providerRank(current.provider || '') ||
+          (providerRank(line.provider) === providerRank(current.provider || '') && line.provider.localeCompare(current.provider || '') < 0)) {
+          selected.set(String(game.id), line);
+        }
+      }
+    }
+    return new Map([...selected].flatMap(([id, line]) => {
+      const spread = normalizeSpread(line.formattedSpread, line.spread);
+      return spread ? [[id, spread] as [string, string]] : [];
+    }));
+  } catch (error) {
+    console.warn('CFBD game lines unavailable; retaining ESPN/TBD values:', error);
+    return new Map();
+  }
+}
+
+function providerRank(provider: string): number {
+  const rank = LINE_PROVIDER_PRIORITY.indexOf(provider.trim().toLowerCase());
+  return rank === -1 ? LINE_PROVIDER_PRIORITY.length : rank;
+}
+
+function normalizeSpread(formattedSpread?: string | null, spread?: number | string | null): string | null {
+  if (typeof formattedSpread === 'string' && formattedSpread.trim()) return formattedSpread.trim();
+  if (typeof spread === 'number' && Number.isFinite(spread)) return String(spread);
+  if (typeof spread === 'string' && spread.trim() && Number.isFinite(Number(spread))) return spread.trim();
+  return null;
+}
+
 async function getFBSTeamMetadata(env: Context['env'], season: number, key: string): Promise<FBSTeamMetadata | null> {
   const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:fbs-team-metadata:v1:${season}`;
   try {
@@ -166,7 +215,7 @@ function makeFBSTeamMetadata(teams: Array<{ id: number; conference?: string }>):
   return { ids: new Set(teams.map(team => team.id)), conferences: new Map(teams.filter(team => team.conference).map(team => [team.id, team.conference!])) };
 }
 
-function normalizeCFBDGame(game: CFBDGame, season: number, requestedWeek: string, conferences?: Map<number, string>, media?: Map<string, string>): ScheduleMatch | null {
+function normalizeCFBDGame(game: CFBDGame, season: number, requestedWeek: string, conferences?: Map<number, string>, media?: Map<string, string>, lines?: Map<string, string>): ScheduleMatch | null {
   if (!game.homeTeam || !game.awayTeam) return null;
   const datetime = game.startDate || '';
   const parsed = datetime ? new Date(datetime) : null;
@@ -178,14 +227,14 @@ function normalizeCFBDGame(game: CFBDGame, season: number, requestedWeek: string
   return {
     id: String(game.id || `${season}-${requestedWeek}-${game.awayTeam}-${game.homeTeam}`),
     date: validDate ? centralDate(parsed!) : 'TBD',
-    time: validDate && game.startTimeTBD !== true ? centralTime(parsed!) : 'TBD',
+    time: validDate && hasKickoffTime(datetime) && game.startTimeTBD !== true ? centralTime(parsed!) : 'TBD',
     datetime,
     week: Number(game.week) || Number(requestedWeek) || 0,
     homeTeam: scheduleTeam(game.homeTeam, game.homeId, game.homePoints, conferences?.get(game.homeId ?? 0)),
     awayTeam: scheduleTeam(game.awayTeam, game.awayId, game.awayPoints, conferences?.get(game.awayId ?? 0)),
     venue: game.venue || 'TBD',
     location: game.venue || 'TBD',
-    tv: media?.get(String(game.id)) || 'TBD', status, isCompleted: completed || /final|completed/i.test(status), spread: null,
+    tv: media?.get(String(game.id)) || 'TBD', status, isCompleted: completed || /final|completed/i.test(status), spread: lines?.get(String(game.id)) || null,
     homeDivision, awayDivision, division: gameDivision(homeDivision, awayDivision),
     homeTeamId: game.homeId,
     awayTeamId: game.awayId,
@@ -194,6 +243,10 @@ function normalizeCFBDGame(game: CFBDGame, season: number, requestedWeek: string
 
 function scheduleTeam(name: string, id?: number, score?: number, conference?: string) {
   return { name, shortName: name, logo: id ? `/api/logo?teamId=${id}&size=128` : `/api/logo?team=${encodeURIComponent(name)}&size=128`, score: typeof score === 'number' ? score : 0, conference: conference || 'Independent' };
+}
+
+function hasKickoffTime(datetime: string): boolean {
+  return /T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/.test(datetime);
 }
 
 async function fetchScoreboard(season: number, week: string, date: string): Promise<ESPNGame[]> {
@@ -240,7 +293,7 @@ function normalizeCore(event: CoreEvent, competition: CoreCompetition | undefine
   const parsed = new Date(datetime); if (Number.isNaN(parsed.getTime())) return null;
   const homeDivision = coreDivision(home);
   const awayDivision = coreDivision(away);
-  return { id: event.id, date: centralDate(parsed), time: centralTime(parsed), datetime, week: event.week?.number || Number(requestedWeek) || 0, homeTeam: coreTeam(home), awayTeam: coreTeam(away), venue: competition.venue?.fullName || 'TBD', location: 'TBD', tv: 'TBD', status: competition.status?.type?.description || 'Scheduled', isCompleted: competition.status?.type?.completed || false, spread: null, homeDivision, awayDivision, division: gameDivision(homeDivision, awayDivision) } as ClassifiedScheduleMatch;
+  return { id: event.id, date: centralDate(parsed), time: hasKickoffTime(datetime) ? centralTime(parsed) : 'TBD', datetime, week: event.week?.number || Number(requestedWeek) || 0, homeTeam: coreTeam(home), awayTeam: coreTeam(away), venue: competition.venue?.fullName || 'TBD', location: 'TBD', tv: 'TBD', status: competition.status?.type?.description || 'Scheduled', isCompleted: competition.status?.type?.completed || false, spread: null, homeDivision, awayDivision, division: gameDivision(homeDivision, awayDivision) } as ClassifiedScheduleMatch;
 }
 
 function coreTeam(competitor: CoreCompetitor) { const team = competitor.team!; return { name: team.displayName || team.name || 'Unknown Team', shortName: team.shortDisplayName || team.abbreviation || team.name || 'Unknown', logo: team.logos?.[0]?.href || '/images/logos/default-logo.png', score: Number(competitor.score) || 0, conference: 'Independent' }; }
@@ -280,11 +333,45 @@ function isFBSGame(game: ClassifiedScheduleMatch): boolean {
 
 function mergeOverlay(games: ScheduleMatch[], events: ESPNGame[]): ScheduleMatch[] {
   return games.map(game => {
-    const match = events.find(event => event.id === game.id || event.competitions?.[0]?.competitors?.every(c => [game.homeTeam.name, game.awayTeam.name].some(name => name.toLowerCase() === (c.team.displayName || '').toLowerCase())));
+    const match = events.find(event => event.id === game.id || event.competitions?.[0]?.competitors?.some(c => c.homeAway === 'home' && sameTeam(c.team.displayName, game.homeTeam.name)) && event.competitions?.[0]?.competitors?.some(c => c.homeAway === 'away' && sameTeam(c.team.displayName, game.awayTeam.name)));
     const competition = match?.competitions?.[0]; if (!competition) return game;
     const home = competition.competitors?.find(c => c.homeAway === 'home'); const away = competition.competitors?.find(c => c.homeAway === 'away');
-    return { ...game, ...(home ? { homeTeam: { ...game.homeTeam, score: Number(home.score) || 0 } } : {}), ...(away ? { awayTeam: { ...game.awayTeam, score: Number(away.score) || 0 } } : {}), ...(competition.status?.type?.description ? { status: competition.status.type.description } : {}), ...(competition.status?.type?.completed !== undefined ? { isCompleted: competition.status.type.completed } : {}), tv: game.tv !== 'TBD' ? game.tv : competition.broadcasts?.[0]?.names?.[0] || game.tv, spread: competition.odds?.[0]?.details || game.spread };
+    const currentSpread = competition.odds?.find(odd => typeof odd.details === 'string' && odd.details.trim())?.details?.trim();
+    const broadcast = game.tv === 'TBD' ? extractBroadcastNames(competition.broadcasts) : null;
+    return { ...game, ...(home ? { homeTeam: { ...game.homeTeam, score: Number(home.score) || 0 } } : {}), ...(away ? { awayTeam: { ...game.awayTeam, score: Number(away.score) || 0 } } : {}), ...(competition.status?.type?.description ? { status: competition.status.type.description } : {}), ...(competition.status?.type?.completed !== undefined ? { isCompleted: competition.status.type.completed } : {}), tv: broadcast || game.tv, spread: currentSpread || game.spread };
   });
+}
+
+function sameTeam(left?: string, right?: string): boolean {
+  if (!left || !right) return false;
+  const normalizedLeft = normalizeTeamName(left);
+  const normalizedRight = normalizeTeamName(right);
+  if (normalizedLeft === normalizedRight) return true;
+
+  // ESPN sometimes appends a mascot to the provider's school name. Only
+  // accept a one-sided, word-boundary match for names of reasonable length;
+  // broad fuzzy matching can join unrelated games (for example, Miami and
+  // Miami (OH)).
+  const shorter = normalizedLeft.length <= normalizedRight.length ? normalizedLeft : normalizedRight;
+  const longer = shorter === normalizedLeft ? normalizedRight : normalizedLeft;
+  return shorter.length >= 4 && new RegExp(`^${escapeRegExp(shorter)}(?: |$)`).test(longer);
+}
+
+function normalizeTeamName(name: string): string {
+  return name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractBroadcastNames(broadcasts?: Array<{ names?: string[] }>): string | null {
+  const names = (broadcasts || []).flatMap(broadcast => broadcast.names || [])
+    .map(name => name.trim().replace(/\s+/g, ' '))
+    .filter(Boolean)
+    .map(name => /^espn\s*\+$/i.test(name) ? 'ESPN+' : name);
+  const unique = [...new Map(names.map(name => [name.toLowerCase(), name])).values()];
+  return unique.find(name => name === 'ESPN+') || unique.join(', ') || null;
 }
 
 function makeResult(games: ScheduleMatch[], week: string) { return { games, weeks: [{ label: `Week ${week}`, value: week }], lastUpdated: new Date().toISOString(), hasLiveGames: games.some(game => !game.isCompleted && /q|half|ot|quarter/i.test(game.status)) }; }

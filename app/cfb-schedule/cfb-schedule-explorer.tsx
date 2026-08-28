@@ -40,7 +40,7 @@ export type CFBScheduleData = {
 type Filters = {
   week: string;
   conference: string;
-  division: 'FBS' | 'all';
+  division: 'FBS' | 'FCS' | 'FBS_FCS' | 'all';
   status: string;
   rankedOnly: boolean;
 };
@@ -65,7 +65,7 @@ const layoutModes: Array<{ value: LayoutMode; label: string }> = [
 
 export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleData }) {
   const [scheduleData, setScheduleData] = useState(initialData);
-  const [filters, setFilters] = useState<Filters>({ week: '', conference: '', division: 'FBS', status: '', rankedOnly: false });
+  const [filters, setFilters] = useState<Filters>({ week: '', conference: '', division: 'FBS_FCS', status: '', rankedOnly: false });
   const [timezone, setTimezone] = useState('America/Chicago');
   const [layout, setLayout] = useState<LayoutMode>('cards');
   const [loading, setLoading] = useState(false);
@@ -73,10 +73,14 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
   const [announcement, setAnnouncement] = useState(initialData.error ? 'Unable to load schedule data.' : '');
   const loadingRef = useRef(false);
   const requestIdRef = useRef(0);
+  // Server-rendered data uses backend default FBS; hydrate board with explicit all.
   const divisionRef = useRef<Filters['division']>('FBS');
 
   const filteredGames = useMemo(() => {
     return scheduleData.games.filter((game) => {
+      if (filters.division === 'FBS' && game.division !== 'FBS') return false;
+      if (filters.division === 'FCS' && game.division !== 'FCS') return false;
+      if (filters.division === 'FBS_FCS' && game.division !== 'FBS' && game.division !== 'FCS') return false;
       if (filters.week && game.week.toString() !== filters.week) return false;
       if (filters.conference && game.homeTeam.conference !== filters.conference && game.awayTeam.conference !== filters.conference) return false;
       if (filters.status && getGameStatus(game) !== filters.status) return false;
@@ -122,7 +126,9 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
     try {
       const url = new URL('/api/cfb-schedule', window.location.origin);
       if (week) url.searchParams.set('week', week);
-      if (division === 'all') url.searchParams.set('division', 'all');
+      // Backend defaults to FBS. Combined and FCS views use the unfiltered
+      // response, then get narrowed locally because backend supports only FBS or explicit all.
+      if (division !== 'FBS') url.searchParams.set('division', 'all');
 
       const response = await fetch(url);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -195,8 +201,10 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
               requestIdRef.current += 1;
               setFilters((current) => ({ ...current, division: value as Filters['division'] }));
             }}>
+              <option value="FBS_FCS">FBS &amp; FCS</option>
               <option value="FBS">FBS</option>
-              <option value="all">All Games</option>
+              <option value="FCS">FCS</option>
+              <option value="all">All Divisions</option>
             </PillSelect>
 
             <PillSelect id="cfb-status" label="Status" value={filters.status} onChange={(value) => setFilters((current) => ({ ...current, status: value }))}>
@@ -333,7 +341,7 @@ function GameCard({ game, timezone }: { game: Game; timezone: string }) {
             </span>
             {game.tv !== 'TBD' && <span className="rounded-full border border-[var(--border)] px-3 py-1 text-xs font-black uppercase tracking-[0.14em] text-[var(--muted)]">{game.tv}</span>}
           </div>
-          <time className="text-sm font-black text-[var(--foreground)]">{formatTime(game.datetime, timezone)}</time>
+          <time className="text-sm font-black text-[var(--foreground)]">{formatGameTime(game, timezone)}</time>
         </div>
 
         <div className="grid gap-3">
@@ -364,7 +372,7 @@ function CompactGame({ game, timezone }: { game: Game; timezone: string }) {
   return (
     <SurfaceCard className={`rounded-[1.25rem] p-3 transition hover:border-[var(--scarlet)] ${status === 'live' ? 'border-[var(--scarlet)]' : ''}`}>
       <div className="grid gap-3 md:grid-cols-[7rem_1fr_7rem_8rem] md:items-center">
-        <div className="text-sm font-black">{formatTime(game.datetime, timezone)}</div>
+        <div className="text-sm font-black">{formatGameTime(game, timezone)}</div>
         <div className="grid gap-2 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
           <MiniTeam team={game.awayTeam} align="left" />
           <span className="hidden text-xs font-black uppercase tracking-[0.16em] text-[var(--muted)] sm:block">at</span>
@@ -384,7 +392,7 @@ function TVGame({ game, timezone }: { game: Game; timezone: string }) {
     <SurfaceCard className="overflow-hidden rounded-[1.5rem] transition hover:-translate-y-0.5 hover:border-[var(--scarlet)]">
       <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] bg-[var(--surface-strong)] px-4 py-3">
         <div className="text-lg font-black tracking-[-0.04em]">{game.tv || 'TBD'}</div>
-        <div className={status === 'live' ? 'text-xs font-black uppercase tracking-[0.14em] text-[var(--scarlet)]' : 'text-xs font-black uppercase tracking-[0.14em] text-[var(--muted)]'}>{formatTime(game.datetime, timezone)}</div>
+        <div className={status === 'live' ? 'text-xs font-black uppercase tracking-[0.14em] text-[var(--scarlet)]' : 'text-xs font-black uppercase tracking-[0.14em] text-[var(--muted)]'}>{formatGameTime(game, timezone)}</div>
       </div>
       <div className="grid gap-3 p-4">
         <MiniTeam team={game.awayTeam} />
@@ -432,13 +440,14 @@ function getGameStatus(game: Game) {
   return 'scheduled';
 }
 
-function formatTime(datetime: string, timezone: string) {
+function formatGameTime(game: Game, timezone: string) {
+  if (game.time === 'TBD' || !game.datetime || Number.isNaN(new Date(game.datetime).getTime())) return 'TBD';
   return new Intl.DateTimeFormat('en-US', {
     hour: 'numeric',
     minute: '2-digit',
     timeZone: timezone,
     timeZoneName: 'short'
-  }).format(new Date(datetime));
+  }).format(new Date(game.datetime));
 }
 
 function formatDate(date: string) {
