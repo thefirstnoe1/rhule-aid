@@ -28,7 +28,7 @@ function cfbdGameWithTime(id: number, startTimeTBD: boolean) {
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1, conference: 'Big Ten' }, { id: 2, conference: 'Big Ten' }]), { status: 200 });
+    if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, conference: 'Big Ten', classification: 'fbs' }, { id: 2, conference: 'Big Ten', classification: 'fbs' }]), { status: 200 });
     if (url.includes('/games/media')) return new Response(JSON.stringify([{ id: 1, outlet: 'BTN' }]), { status: 200 });
     if (url.includes('collegefootballdata.com')) {
       const games = url.includes('classification=fbs')
@@ -44,7 +44,7 @@ describe('CFBD division views', () => {
   it('does not assign a kickoff time to CFBD TBD games', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
       if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
       if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGameWithTime(1, true)]), { status: 200 });
       return new Response(JSON.stringify({ events: [] }), { status: 200 });
@@ -58,7 +58,7 @@ describe('CFBD division views', () => {
   it('normalizes confirmed CFBD kickoff time', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
       if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
       if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGameWithTime(1, false)]), { status: 200 });
       return new Response(JSON.stringify({ events: [] }), { status: 200 });
@@ -92,7 +92,7 @@ describe('CFBD division views', () => {
   it('prefers formatted Consensus CFBD lines', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
       if (url.includes('/games/media')) return new Response('[]', { status: 200 });
       if (url.includes('/lines')) return new Response(JSON.stringify([{ id: 1, lines: [
         { provider: 'DraftKings', spread: -3 },
@@ -110,7 +110,7 @@ describe('CFBD division views', () => {
   it('uses nonempty ESPN current odds over CFBD lines', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
       if (url.includes('/games/media')) return new Response('[]', { status: 200 });
       if (url.includes('/lines')) return new Response(JSON.stringify([{ id: 1, lines: [{ provider: 'Consensus', formattedSpread: 'Iowa -2.5' }] }]), { status: 200 });
       if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
@@ -146,6 +146,28 @@ describe('CFBD division views', () => {
     expect((body.games[0] as { homeTeam: { conference: string } }).homeTeam.conference).toBe('Big Ten');
   });
 
+  it('classifies metadata-backed FBS and FCS games while leaving lower levels unknown', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([
+        { id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' },
+        { id: 3, classification: 'fcs' }, { id: 4, classification: 'fcs' },
+        { id: 5, classification: 'd2' }, { id: 6, classification: 'd2' },
+      ]), { status: 200 });
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
+      if (url.includes('/games?')) return new Response(JSON.stringify([
+        cfbdGame(1, 1, 2), cfbdGame(2, 3, 4), cfbdGame(3, 5, 6),
+      ]), { status: 200 });
+      return new Response(JSON.stringify({ events: [] }), { status: 200 });
+    }));
+
+    const response = await onRequest(context('all'));
+    const body = await response.json() as { games: Array<{ id: string; division: string; homeDivision: string; awayDivision: string }> };
+    expect(body.games.map(game => [game.id, game.division, game.homeDivision, game.awayDivision])).toEqual([
+      ['1', 'FBS', 'FBS', 'FBS'], ['2', 'FCS', 'FCS', 'FCS'], ['3', 'unknown', 'unknown', 'unknown'],
+    ]);
+  });
+
   it('joins CFBD TV media to games by exact ID', async () => {
     const response = await onRequest(context());
     const body = await response.json() as { games: Array<{ id: string; tv: string }> };
@@ -156,7 +178,7 @@ describe('CFBD division views', () => {
   it('preserves TBD TV when CFBD media fails', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1, conference: 'Big Ten' }, { id: 2, conference: 'Big Ten' }]), { status: 200 });
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, conference: 'Big Ten', classification: 'fbs' }, { id: 2, conference: 'Big Ten', classification: 'fbs' }]), { status: 200 });
       if (url.includes('/games/media')) return new Response('unavailable', { status: 503 });
       if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
       return new Response(JSON.stringify({ events: [] }), { status: 200 });
@@ -171,7 +193,7 @@ describe('CFBD division views', () => {
   it('fills TBD TV with ESPN+ when broadcast names are supplied by ESPN', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
       if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
       if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
       if (url.includes('/scoreboard?')) return new Response(JSON.stringify({ events: [{
@@ -191,7 +213,7 @@ describe('CFBD division views', () => {
   it('does not overwrite CFBD media with ESPN broadcast overlay', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/teams/fbs')) return new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 });
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
       if (url.includes('/games/media')) return new Response(JSON.stringify([{ id: 1, outlet: 'BTN' }]), { status: 200 });
       if (url.includes('/lines')) return new Response('[]', { status: 200 });
       if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
