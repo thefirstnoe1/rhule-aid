@@ -42,7 +42,6 @@ type Filters = {
   conference: string;
   division: 'FBS' | 'FCS' | 'FBS_FCS' | 'all';
   status: string;
-  rankedOnly: boolean;
 };
 
 type LayoutMode = 'cards' | 'compact' | 'tv';
@@ -65,7 +64,7 @@ const layoutModes: Array<{ value: LayoutMode; label: string }> = [
 
 export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleData }) {
   const [scheduleData, setScheduleData] = useState(initialData);
-  const [filters, setFilters] = useState<Filters>({ week: initialData.weeks[0]?.value || '', conference: '', division: 'FBS_FCS', status: '', rankedOnly: false });
+  const [filters, setFilters] = useState<Filters>({ week: initialData.weeks[0]?.value || '', conference: '', division: 'FBS_FCS', status: '' });
   const [timezone, setTimezone] = useState('America/Chicago');
   const [layout, setLayout] = useState<LayoutMode>('cards');
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -86,7 +85,6 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
       if (filters.week && game.week.toString() !== filters.week) return false;
       if (filters.conference && game.homeTeam.conference !== filters.conference && game.awayTeam.conference !== filters.conference) return false;
       if (filters.status && getGameStatus(game) !== filters.status) return false;
-      if (filters.rankedOnly && !game.homeTeam.rank && !game.awayTeam.rank) return false;
       return true;
     });
   }, [filters, scheduleData.games]);
@@ -99,14 +97,13 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
   }, [filteredGames]);
 
   const summary = useMemo(() => {
-    return filteredGames.reduce<{ live: number; completed: number; ranked: number; networks: Set<string> }>((totals, game) => {
+    return filteredGames.reduce<{ live: number; completed: number; networks: Set<string> }>((totals, game) => {
       const status = getGameStatus(game);
       if (status === 'live') totals.live += 1;
       if (status === 'completed') totals.completed += 1;
-      if (game.homeTeam.rank || game.awayTeam.rank) totals.ranked += 1;
       if (game.tv && game.tv !== 'TBD') totals.networks.add(game.tv);
       return totals;
-    }, { live: 0, completed: 0, ranked: 0, networks: new Set<string>() });
+    }, { live: 0, completed: 0, networks: new Set<string>() });
   }, [filteredGames]);
 
   const hasLiveGames = useMemo(() => scheduleData.games.some((game) => {
@@ -182,10 +179,9 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
   return (
     <div className="container-shell pb-20">
       <SurfaceCard className="mb-5 overflow-hidden rounded-[2rem]">
-        <div className="grid border-b border-[var(--border)] md:grid-cols-4">
+        <div className="grid border-b border-[var(--border)] md:grid-cols-3">
           <Stat label="Games Showing" value={filteredGames.length.toString()} />
           <Stat label="Live" value={summary.live.toString()} tone="scarlet" />
-          <Stat label="Ranked Matchups" value={summary.ranked.toString()} />
           <Stat label="Networks" value={summary.networks.size.toString()} />
         </div>
 
@@ -221,14 +217,6 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
               {timezones.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
             </PillSelect>
 
-            <button
-              type="button"
-              onClick={() => setFilters((current) => ({ ...current, rankedOnly: !current.rankedOnly }))}
-              aria-pressed={filters.rankedOnly}
-              className={`rounded-full px-4 py-2 text-xs font-black uppercase tracking-[0.14em] transition ${filters.rankedOnly ? 'bg-[var(--scarlet)] text-white shadow-[0_14px_30px_var(--scarlet-shadow)]' : 'border border-[var(--border)] bg-[var(--surface-strong)] text-[var(--muted)] hover:text-[var(--foreground)]'}`}
-            >
-              Ranked Only
-            </button>
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center xl:justify-end">
