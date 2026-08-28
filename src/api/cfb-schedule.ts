@@ -23,13 +23,9 @@ interface CFBDGame {
 }
 interface CFBDMedia { id?: number | string; outlet?: string }
 interface CFBDCalendarEntry { week?: number | string; seasonType?: string }
-interface CFBDRankingEntry { rank?: number | string; school?: string; team?: string; name?: string }
-interface CFBDPoll { poll?: string; ranks?: CFBDRankingEntry[] }
-interface CFBDPollWeek { season?: number; seasonType?: string; week?: number | string; polls?: CFBDPoll[] }
-interface CFBDRankSnapshot { week?: number | string; seasonType?: string; poll?: string; ranks?: CFBDRankingEntry[] }
 interface CFBDLine { provider?: string; spread?: number | string | null; formattedSpread?: string | null }
 interface CFBDLinesGame { id?: number | string; lines?: CFBDLine[] }
-type FBSTeamMetadata = { ids: Set<number>; fcsIds: Set<number>; conferences: Map<number, string>; alternateNames: Map<number, string[]> };
+type FBSTeamMetadata = { ids: Set<number>; fcsIds: Set<number>; conferences: Map<number, string> };
 
 type GameDivision = 'FBS' | 'FCS' | 'unknown';
 type ClassifiedScheduleMatch = ScheduleMatch & {
@@ -63,11 +59,10 @@ interface CoreCompetitor { homeAway: 'home' | 'away'; score?: unknown; team?: { 
 const CFBD_BASE = 'https://api.collegefootballdata.com/games';
 const CFBD_LINES_BASE = 'https://api.collegefootballdata.com/lines';
 const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football';
-const CACHE_SCHEMA = 'v24';
+const CACHE_SCHEMA = 'v18';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
 const CALENDAR_CACHE_TTL = 86400;
-const RANKINGS_CACHE_TTL = 3600;
 
 export async function onRequest(context: Context): Promise<Response> {
   const { request, env } = context;
@@ -84,16 +79,15 @@ export async function onRequest(context: Context): Promise<Response> {
   let calendarWeeks: ScheduleWeek[] | null = null;
   if (env.CFBD_API_KEY) {
     try {
-      const [cfbdGames, fbsTeams, media, lines, calendar, rankings] = await Promise.all([
+      const [cfbdGames, fbsTeams, media, lines, calendar] = await Promise.all([
         fetchCFBD(season, week, env.CFBD_API_KEY, division),
         getFBSTeamMetadata(env, season, env.CFBD_API_KEY),
         fetchCFBDMedia(season, week, env.CFBD_API_KEY),
         fetchCFBDLines(season, week, env.CFBD_API_KEY),
         fetchCFBDCalendar(env, season, env.CFBD_API_KEY),
-        fetchCFBDRankings(env, season, week, env.CFBD_API_KEY),
       ]);
       calendarWeeks = calendar;
-      games = cfbdGames.map(game => normalizeCFBDGame(game, season, week, fbsTeams, media, lines, rankings)).filter(isGame).sort(sortGames);
+      games = cfbdGames.map(game => normalizeCFBDGame(game, season, week, fbsTeams, media, lines)).filter(isGame).sort(sortGames);
       if (division === 'fbs' && fbsTeams) {
         games = games.filter(game => {
           const classified = game as ClassifiedScheduleMatch;
@@ -134,68 +128,12 @@ export async function onRequest(context: Context): Promise<Response> {
 async function fetchCFBD(season: number, week: string, key: string, division: 'fbs' | 'all'): Promise<CFBDGame[]> {
   const params = new URLSearchParams({ year: String(season), seasonType: 'regular', week });
   if (division === 'fbs') params.set('classification', 'fbs');
-  try {
-    return await fetchCFBDGamesWithSeasonFallback(params, week, key);
-  } catch (error) {
-    if (division !== 'fbs') throw error;
-    // Some CFBD deployments reject classification=fbs. Retry the unclassified
-    // endpoint so local team metadata can still enforce the FBS boundary.
-    params.delete('classification');
-    return fetchCFBDGamesWithSeasonFallback(params, week, key);
-  }
-}
-
-async function fetchCFBDGamesWithSeasonFallback(params: URLSearchParams, week: string, key: string): Promise<CFBDGame[]> {
-  const targetedEndpoint = `${CFBD_BASE}?${params}`;
-  const targeted = await fetchCFBDGamesEndpoint(targetedEndpoint, key);
-  if (targeted.length) return targeted;
-
-  const seasonParams = new URLSearchParams(params);
-  seasonParams.delete('week');
-  const seasonEndpoint = `${CFBD_BASE}?${seasonParams}`;
-  const seasonGames = await fetchCFBDGamesEndpoint(seasonEndpoint, key);
-  const matchingGames = seasonGames.filter(game => String(game.week) === week);
-  if (!matchingGames.length) console.warn(`CFBD games empty for week ${week}: targeted and season sources returned no matching games`);
-  return matchingGames;
-}
-
-const CFBD_GAME_ATTEMPTS = 3;
-
-async function fetchCFBDGamesEndpoint(endpoint: string, key: string): Promise<CFBDGame[]> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < CFBD_GAME_ATTEMPTS; attempt++) {
-    try {
-      const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
-      if (!response.ok) {
-        const retryable = response.status === 429 || response.status >= 500;
-        if (!retryable || attempt === CFBD_GAME_ATTEMPTS - 1) {
-          console.error(`CFBD games request failed after retries: ${endpoint} (${response.status})`);
-          throw new Error(`CFBD request failed: ${response.status}`);
-        }
-        await delayForRetry(response, attempt);
-        continue;
-      }
-      const data: unknown = await response.json();
-      if (!Array.isArray(data)) throw new Error('Invalid CFBD games response');
-      return data as CFBDGame[];
-    } catch (error) {
-      lastError = error;
-      if (error instanceof Error && error.message.startsWith('CFBD request failed:')) throw error;
-      if (attempt === CFBD_GAME_ATTEMPTS - 1) {
-        console.error(`CFBD games request failed after retries: ${endpoint} (network error)`);
-        throw error;
-      }
-      await delayForRetry(undefined, attempt);
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error('CFBD games request failed');
-}
-
-async function delayForRetry(response: Response | undefined, attempt: number): Promise<void> {
-  const retryAfter = response?.headers.get('Retry-After');
-  const seconds = retryAfter && /^\d+(?:\.\d+)?$/.test(retryAfter) ? Number(retryAfter) : 0;
-  const delay = Math.min(seconds ? seconds * 1000 : 100 * (attempt + 1), 1000);
-  await new Promise(resolve => setTimeout(resolve, delay));
+  const endpoint = `${CFBD_BASE}?${params}`;
+  const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
+  if (!response.ok) throw new Error(`CFBD request failed: ${response.status}`);
+  const data: unknown = await response.json();
+  if (!Array.isArray(data)) throw new Error('Invalid CFBD games response');
+  return data as CFBDGame[];
 }
 
 async function fetchCFBDMedia(season: number, week: string, key: string): Promise<Map<string, string>> {
@@ -267,51 +205,6 @@ async function fetchCFBDCalendar(env: Context['env'], season: number, key: strin
   }
 }
 
-async function fetchCFBDRankings(env: Context['env'], season: number, week: string, key: string): Promise<Map<string, number> | null> {
-  const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:rankings:ap:${season}`;
-  try {
-    let snapshots: CFBDRankSnapshot[] | null = null;
-    const cached = await env.CFB_SCHEDULE_CACHE?.get(cacheKey);
-    if (cached) {
-      const data = JSON.parse(cached) as { snapshots?: CFBDRankSnapshot[] };
-      if (Array.isArray(data.snapshots)) snapshots = data.snapshots;
-    }
-    const params = new URLSearchParams({ year: String(season) });
-    if (!snapshots) {
-      const response = await fetch(`https://api.collegefootballdata.com/rankings?${params}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
-      if (!response.ok) throw new Error(`CFBD rankings failed: ${response.status}`);
-      const data: unknown = await response.json();
-      if (!Array.isArray(data)) throw new Error('Invalid CFBD rankings response');
-      const pollWeeks = data as CFBDPollWeek[];
-      snapshots = pollWeeks.flatMap(pollWeek => (pollWeek.polls || []).map(poll => ({
-        week: pollWeek.week,
-        seasonType: pollWeek.seasonType,
-        poll: poll.poll,
-        ranks: poll.ranks,
-      })));
-      await env.CFB_SCHEDULE_CACHE?.put(cacheKey, JSON.stringify({ snapshots }), { expirationTtl: RANKINGS_CACHE_TTL });
-    }
-    const targetWeek = Number(week);
-    const available = snapshots.filter(snapshot => snapshot.poll === 'AP Top 25' &&
-      (!snapshot.seasonType || snapshot.seasonType.toLowerCase() !== 'postseason') &&
-      Number.isFinite(Number(snapshot.week)) && Array.isArray(snapshot.ranks));
-    if (!available.length) return new Map();
-    const exact = available.find(snapshot => Number(snapshot.week) === targetWeek);
-    const prior = available.filter(snapshot => Number(snapshot.week) < targetWeek).sort((a, b) => Number(b.week) - Number(a.week))[0];
-    const selected = exact || prior || available.sort((a, b) => Number(a.week) - Number(b.week))[0];
-    if (!selected) return new Map();
-    const rankings = selected.ranks!.flatMap(entry => {
-      const name = entry.school || entry.team || entry.name;
-      const rank = Number(entry.rank);
-      return name && Number.isInteger(rank) && rank > 0 && rank <= 25 ? [[normalizeTeamName(name), rank] as [string, number]] : [];
-    });
-    return new Map(rankings);
-  } catch (error) {
-    console.warn('CFBD AP rankings unavailable; retaining unranked teams:', error);
-    return null;
-  }
-}
-
 const LINE_PROVIDER_PRIORITY = ['consensus', 'espn', 'draftkings', 'fanduel'];
 
 async function fetchCFBDLines(season: number, week: string, key: string): Promise<Map<string, string>> {
@@ -362,17 +255,14 @@ async function getFBSTeamMetadata(env: Context['env'], season: number, key: stri
   try {
     const cached = await env.CFB_SCHEDULE_CACHE?.get(cacheKey);
     if (cached) {
-      const data = JSON.parse(cached) as { teams?: Array<{ id: number; conference?: string; classification?: string; alternateNames?: string[] }> };
+      const data = JSON.parse(cached) as { teams?: Array<{ id: number; conference?: string; classification?: string }> };
       if (Array.isArray(data.teams)) return makeFBSTeamMetadata(data.teams);
     }
     const response = await fetch(`https://api.collegefootballdata.com/teams?year=${season}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
     if (!response.ok) throw new Error(`CFBD team metadata failed: ${response.status}`);
     const data: unknown = await response.json();
     if (!Array.isArray(data)) throw new Error('Invalid CFBD team metadata response');
-    const teams = data.map(team => {
-      const value = team as { id?: number; conference?: string; classification?: string; school?: string; alt_name_1?: string; alt_name_2?: string; alt_name_3?: string; location?: string; abbreviation?: string };
-      return { id: Number(value.id), conference: value.conference, classification: value.classification, alternateNames: [value.school, value.alt_name_1, value.alt_name_2, value.alt_name_3, value.location, value.abbreviation].filter((name): name is string => Boolean(name)) };
-    }).filter(team => Number.isInteger(team.id));
+    const teams = data.map(team => ({ id: Number((team as { id?: number }).id), conference: (team as { conference?: string }).conference, classification: (team as { classification?: string }).classification })).filter(team => Number.isInteger(team.id));
     if (!teams.length || !teams.some(team => normalizeDivision(team.classification) !== 'unknown')) throw new Error('CFBD team metadata response had no recognized classifications');
     await env.CFB_SCHEDULE_CACHE?.put(cacheKey, JSON.stringify({ teams }), { expirationTtl: FBS_TEAM_CACHE_TTL });
     return makeFBSTeamMetadata(teams);
@@ -382,13 +272,12 @@ async function getFBSTeamMetadata(env: Context['env'], season: number, key: stri
   }
 }
 
-function makeFBSTeamMetadata(teams: Array<{ id: number; conference?: string; classification?: string; alternateNames?: string[] }>): FBSTeamMetadata {
+function makeFBSTeamMetadata(teams: Array<{ id: number; conference?: string; classification?: string }>): FBSTeamMetadata {
   const classified = teams.map(team => ({ ...team, division: normalizeDivision(team.classification) }));
   return {
     ids: new Set(classified.filter(team => team.division === 'FBS').map(team => team.id)),
     fcsIds: new Set(classified.filter(team => team.division === 'FCS').map(team => team.id)),
     conferences: new Map(classified.filter(team => team.conference).map(team => [team.id, team.conference!])),
-    alternateNames: new Map(classified.map(team => [team.id, team.alternateNames || []])),
   };
 }
 
@@ -400,7 +289,7 @@ function gameDivisionFromTeam(supplied: Array<string | undefined>, teamId: numbe
   return 'unknown';
 }
 
-function normalizeCFBDGame(game: CFBDGame, season: number, requestedWeek: string, metadata?: FBSTeamMetadata | null, media?: Map<string, string>, lines?: Map<string, string>, rankings?: Map<string, number> | null): ScheduleMatch | null {
+function normalizeCFBDGame(game: CFBDGame, season: number, requestedWeek: string, metadata?: FBSTeamMetadata | null, media?: Map<string, string>, lines?: Map<string, string>): ScheduleMatch | null {
   if (!game.homeTeam || !game.awayTeam) return null;
   const datetime = game.startDate || '';
   const parsed = datetime ? new Date(datetime) : null;
@@ -415,8 +304,8 @@ function normalizeCFBDGame(game: CFBDGame, season: number, requestedWeek: string
     time: validDate && hasKickoffTime(datetime) && game.startTimeTBD !== true ? centralTime(parsed!) : 'TBD',
     datetime,
     week: Number(game.week) || Number(requestedWeek) || 0,
-    homeTeam: scheduleTeam(game.homeTeam, game.homeId, game.homePoints, metadata?.conferences.get(game.homeId ?? 0), rankTeam(game.homeTeam, game.homeId, metadata, rankings)),
-    awayTeam: scheduleTeam(game.awayTeam, game.awayId, game.awayPoints, metadata?.conferences.get(game.awayId ?? 0), rankTeam(game.awayTeam, game.awayId, metadata, rankings)),
+    homeTeam: scheduleTeam(game.homeTeam, game.homeId, game.homePoints, metadata?.conferences.get(game.homeId ?? 0)),
+    awayTeam: scheduleTeam(game.awayTeam, game.awayId, game.awayPoints, metadata?.conferences.get(game.awayId ?? 0)),
     venue: game.venue || 'TBD',
     location: game.venue || 'TBD',
     tv: media?.get(String(game.id)) || 'TBD', status, isCompleted: completed || /final|completed/i.test(status), spread: lines?.get(String(game.id)) || null,
@@ -426,20 +315,8 @@ function normalizeCFBDGame(game: CFBDGame, season: number, requestedWeek: string
   } as ClassifiedScheduleMatch;
 }
 
-function scheduleTeam(name: string, id?: number, score?: number, conference?: string, rank?: number) {
-  return { name, shortName: name, logo: id ? `/api/logo?teamId=${id}&size=128` : `/api/logo?team=${encodeURIComponent(name)}&size=128`, score: typeof score === 'number' ? score : 0, conference: conference || 'Independent', ...(rank ? { rank } : {}) };
-}
-
-function rankTeam(name: string, id: number | undefined, metadata?: FBSTeamMetadata | null, rankings?: Map<string, number> | null): number | undefined {
-  if (!rankings) return undefined;
-  const candidates = [name, ...(id === undefined ? [] : metadata?.alternateNames.get(id) || [])];
-  for (const candidate of candidates) {
-    const direct = rankings.get(normalizeTeamName(candidate));
-    if (direct !== undefined) return direct;
-    const variant = [...rankings].find(([rankedName]) => sameTeam(candidate, rankedName));
-    if (variant) return variant[1];
-  }
-  return undefined;
+function scheduleTeam(name: string, id?: number, score?: number, conference?: string) {
+  return { name, shortName: name, logo: id ? `/api/logo?teamId=${id}&size=128` : `/api/logo?team=${encodeURIComponent(name)}&size=128`, score: typeof score === 'number' ? score : 0, conference: conference || 'Independent' };
 }
 
 function hasKickoffTime(datetime: string): boolean {

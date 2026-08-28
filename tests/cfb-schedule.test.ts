@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { onRequest } from '../src/api/cfb-schedule.ts';
 
-function request(division?: 'all', week = '1') {
-  return new Request(`https://rhule-aid.com/api/cfb-schedule?season=2025&week=${week}${division ? `&division=${division}` : ''}`);
+function request(division?: 'all') {
+  return new Request(`https://rhule-aid.com/api/cfb-schedule?season=2025&week=1${division ? `&division=${division}` : ''}`);
 }
 
-function context(division?: 'all', week = '1'): Parameters<typeof onRequest>[0] {
-  return { request: request(division, week), env: { CFBD_API_KEY: 'test-key' } } as Parameters<typeof onRequest>[0];
+function context(division?: 'all'): Parameters<typeof onRequest>[0] {
+  return { request: request(division), env: { CFBD_API_KEY: 'test-key' } } as Parameters<typeof onRequest>[0];
 }
 
 function cfbdGame(id: number, homeId = 1, awayId = 2) {
@@ -239,169 +239,6 @@ describe('CFBD division views', () => {
     const response = await onRequest(context());
     const body = await response.json() as { games: Array<{ tv: string }> };
     expect(body.games[0]?.tv).toBe('ESPN');
-  });
-
-  it('adds AP Top 25 ranks and resolves provider name variants', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
-      if (url.includes('/rankings?')) return new Response(JSON.stringify([
-        { week: 1, seasonType: 'regular', polls: [{ poll: 'Coaches Poll', ranks: [{ rank: 1, school: 'Nebraska' }] }, { poll: 'AP Top 25', ranks: [{ rank: 7, school: 'Nebraska Cornhuskers' }] }] },
-      ]), { status: 200 });
-      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
-      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
-      return new Response(JSON.stringify({ events: [] }), { status: 200 });
-    }));
-
-    const response = await onRequest(context());
-    const body = await response.json() as { games: Array<{ homeTeam: { rank?: number }; awayTeam: { rank?: number } }> };
-    const rankingsRequest = vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/rankings?'))?.[0];
-    expect(String(rankingsRequest)).not.toContain('poll=ap');
-    expect(body.games[0]?.homeTeam.rank).toBe(7);
-    expect(body.games[0]?.awayTeam.rank).toBeUndefined();
-  });
-
-  it('uses earliest preseason AP snapshot for week one and never uses a later poll', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
-      if (url.includes('/rankings?')) return new Response(JSON.stringify([
-        { week: 0, seasonType: 'regular', polls: [{ poll: 'AP Top 25', ranks: [{ rank: 11, school: 'Nebraska' }] }] },
-        { week: 2, seasonType: 'regular', polls: [{ poll: 'AP Top 25', ranks: [{ rank: 2, school: 'Nebraska' }] }] },
-        { week: 1, seasonType: 'postseason', polls: [{ poll: 'AP Top 25', ranks: [{ rank: 1, school: 'Nebraska' }] }] },
-      ]), { status: 200 });
-      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
-      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
-      return new Response(JSON.stringify({ events: [] }), { status: 200 });
-    }));
-
-    const response = await onRequest(context());
-    const body = await response.json() as { games: Array<{ homeTeam: { rank?: number } }> };
-    expect(body.games[0]?.homeTeam.rank).toBe(11);
-  });
-
-  it('uses greatest prior AP snapshot when the requested week has no poll', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
-      if (url.includes('/rankings?')) return new Response(JSON.stringify([
-        { week: 1, seasonType: 'regular', polls: [{ poll: 'AP Top 25', ranks: [{ rank: 7, school: 'Nebraska' }] }] },
-        { week: 3, seasonType: 'regular', polls: [{ poll: 'AP Top 25', ranks: [{ rank: 2, school: 'Nebraska' }] }] },
-      ]), { status: 200 });
-      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
-      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
-      return new Response(JSON.stringify({ events: [] }), { status: 200 });
-    }));
-
-    const response = await onRequest(context(undefined, '2'));
-    const body = await response.json() as { games: Array<{ homeTeam: { rank?: number } }> };
-    expect(body.games[0]?.homeTeam.rank).toBe(7);
-  });
-
-  it('leaves teams unranked when CFBD rankings are unavailable', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
-      if (url.includes('/rankings?')) return new Response('unavailable', { status: 503 });
-      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
-      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
-      return new Response(JSON.stringify({ events: [] }), { status: 200 });
-    }));
-
-    const response = await onRequest(context());
-    const body = await response.json() as { games: Array<{ homeTeam: { rank?: number }; awayTeam: { rank?: number } }> };
-    expect(response.status).toBe(200);
-    expect(body.games[0]?.homeTeam.rank).toBeUndefined();
-    expect(body.games[0]?.awayTeam.rank).toBeUndefined();
-  });
-
-  it('recovers from a transient CFBD games failure', async () => {
-    let attempts = 0;
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
-      if (url.includes('/games?')) {
-        attempts++;
-        if (attempts === 1) return new Response('busy', { status: 503 });
-        return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
-      }
-      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
-      return new Response(JSON.stringify({ events: [] }), { status: 200 });
-    }));
-
-    const response = await onRequest(context());
-    const body = await response.json() as { games: unknown[] };
-    expect(response.status).toBe(200);
-    expect(body.games).toHaveLength(1);
-    expect(attempts).toBe(2);
-  });
-
-  it('uses season-wide CFBD games when the targeted week response is empty', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
-      if (url.includes('/games?')) return url.includes('week=')
-        ? new Response('[]', { status: 200 })
-        : new Response(JSON.stringify([cfbdGame(1), { ...cfbdGame(2), week: 2 }]), { status: 200 });
-      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
-      return new Response(JSON.stringify({ events: [] }), { status: 200 });
-    }));
-
-    const response = await onRequest(context());
-    const body = await response.json() as { games: Array<{ id: string }> };
-    expect(response.status).toBe(200);
-    expect(body.games.map(game => game.id)).toEqual(['1']);
-  });
-
-  it('does not request season-wide games when targeted CFBD games are present', async () => {
-    let gameRequests = 0;
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]), { status: 200 });
-      if (url.includes('/games?')) {
-        gameRequests++;
-        return new Response(JSON.stringify([cfbdGame(1)]), { status: 200 });
-      }
-      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
-      return new Response(JSON.stringify({ events: [] }), { status: 200 });
-    }));
-
-    await onRequest(context());
-    expect(gameRequests).toBe(1);
-  });
-
-  it('retries unclassified games when the FBS classification request fails', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }, { id: 3, classification: 'fcs' }, { id: 4, classification: 'fcs' }]), { status: 200 });
-      if (url.includes('/games?')) return url.includes('classification=fbs')
-        ? new Response('unsupported', { status: 400 })
-        : new Response(JSON.stringify([cfbdGame(1, 1, 2), cfbdGame(2, 3, 4)]), { status: 200 });
-      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]', { status: 200 });
-      return new Response(JSON.stringify({ events: [] }), { status: 200 });
-    }));
-
-    const response = await onRequest(context());
-    const body = await response.json() as { games: Array<{ id: string }> };
-    expect(response.status).toBe(200);
-    expect(body.games.map(game => game.id)).toEqual(['1']);
-    expect(vi.mocked(fetch).mock.calls.filter(call => String(call[0]).includes('/games?'))).toHaveLength(2);
-  });
-
-  it('waits for exhausted CFBD game retries before Core fallback', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/games?')) return new Response('unavailable', { status: 503 });
-      if (url.includes('/events?')) return new Response(JSON.stringify({ items: [] }), { status: 200 });
-      return new Response(JSON.stringify({ events: [] }), { status: 200 });
-    }));
-
-    const response = await onRequest(context('all'));
-    const gamesAttempts = vi.mocked(fetch).mock.calls.filter(call => String(call[0]).includes('/games?'));
-    const coreAttempt = vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/events?'));
-    expect(response.status).toBe(502);
-    expect(gamesAttempts).toHaveLength(3);
-    expect(coreAttempt).toBeDefined();
   });
 
   it('requests all CFBD media and normalizes streaming ESPN+', async () => {
