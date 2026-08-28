@@ -252,17 +252,19 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
             >
               {loading ? 'Refreshing' : 'Refresh'}
             </button>
-            <button
-              type="button"
-              onClick={() => setAutoRefresh((enabled) => !enabled)}
-              aria-pressed={autoRefresh}
-              aria-label="Automatic live score updates"
-              className={`rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.14em] transition ${autoRefresh ? 'border-[var(--scarlet)] bg-[color-mix(in_srgb,var(--scarlet)_12%,var(--surface-strong))] text-[var(--scarlet)]' : 'border-[var(--border)] bg-[var(--surface-strong)] text-[var(--muted)] hover:text-[var(--foreground)]'}`}
-            >
-              Live updates {autoRefresh ? 'On' : 'Off'}
-            </button>
             {scheduleData.lastUpdated && <p className="text-xs text-[var(--muted)]">Updated {new Date(scheduleData.lastUpdated).toLocaleTimeString()}</p>}
           </div>
+        </div>
+        <div className="flex justify-end border-t border-[var(--border)] px-4 py-3 md:px-5">
+          <button
+            type="button"
+            onClick={() => setAutoRefresh((enabled) => !enabled)}
+            aria-pressed={autoRefresh}
+            aria-label="Automatic live score updates"
+            className={`rounded-full border px-3 py-1.5 text-[0.65rem] font-black uppercase tracking-[0.14em] transition ${autoRefresh ? 'border-[var(--border)] bg-[var(--surface-strong)] text-[var(--muted)] hover:border-[var(--scarlet)] hover:text-[var(--scarlet)]' : 'border-[var(--border)] bg-[var(--surface-strong)] text-[var(--muted)] hover:text-[var(--foreground)]'}`}
+          >
+            Auto live updates: {autoRefresh ? 'On' : 'Off'}
+          </button>
         </div>
       </SurfaceCard>
 

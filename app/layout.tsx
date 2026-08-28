@@ -19,6 +19,7 @@ export const metadata: Metadata = {
   description: 'A modern Nebraska Cornhuskers football hub for schedules, game day, roster, news, and more.',
   metadataBase: new URL(siteUrl),
   alternates: { canonical: siteUrl },
+  icons: { icon: '/images/favicon-rhuleaid.png' },
   openGraph: {
     type: 'website',
     siteName: 'Rhule Aid',
