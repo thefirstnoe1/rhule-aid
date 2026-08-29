@@ -59,7 +59,7 @@ interface CoreCompetitor { homeAway: 'home' | 'away'; score?: unknown; team?: { 
 const CFBD_BASE = 'https://api.collegefootballdata.com/games';
 const CFBD_LINES_BASE = 'https://api.collegefootballdata.com/lines';
 const CORE_BASE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/college-football';
-const CACHE_SCHEMA = 'v18';
+const CACHE_SCHEMA = 'v19';
 const CORE_MAX_DETAIL_REQUESTS = 8;
 const FBS_TEAM_CACHE_TTL = 86400;
 const CALENDAR_CACHE_TTL = 86400;
@@ -68,12 +68,12 @@ export async function onRequest(context: Context): Promise<Response> {
   const { request, env } = context;
   const url = new URL(request.url);
   const season = getSeason(url);
-  const week = url.searchParams.get('week') || '1';
+  const week = getWeek(url);
   const date = url.searchParams.get('date') || '';
   const division = url.searchParams.get('division') === 'all' ? 'all' : 'fbs';
   const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:${season}:${week}:${date || 'current'}:${division}`;
   const cached = await readCache(env, cacheKey);
-  if (cached) return jsonResponse(cached, 200, 900, request);
+  if (cached) return jsonResponse(cached, 200, scheduleTtl(cached, date), request);
 
   let games: ScheduleMatch[] = [];
   let calendarWeeks: ScheduleWeek[] | null = null;
@@ -120,7 +120,7 @@ export async function onRequest(context: Context): Promise<Response> {
   if (games.length === 0) return jsonResponse({ games: [], weeks: [], lastUpdated: new Date().toISOString(), hasLiveGames: false, error: 'Schedule data unavailable from CFBD and ESPN' }, 502, 0);
 
   const result = makeResult(games, week, calendarWeeks || [{ label: `Week ${week}`, value: week }]);
-  const ttl = result.hasLiveGames ? 60 : 900;
+  const ttl = scheduleTtl(result, date);
   await writeCache(env, cacheKey, result, ttl);
   return jsonResponse(result, 200, ttl, request);
 }
@@ -407,7 +407,7 @@ function isFBSGame(game: ClassifiedScheduleMatch): boolean {
 
 function mergeOverlay(games: ScheduleMatch[], events: ESPNGame[]): ScheduleMatch[] {
   return games.map(game => {
-    const match = events.find(event => event.id === game.id || event.competitions?.[0]?.competitors?.some(c => c.homeAway === 'home' && sameTeam(c.team.displayName, game.homeTeam.name)) && event.competitions?.[0]?.competitors?.some(c => c.homeAway === 'away' && sameTeam(c.team.displayName, game.awayTeam.name)));
+    const match = events.find(event => String(event.id) === String(game.id) || event.competitions?.[0]?.competitors?.some(c => c.homeAway === 'home' && sameTeam(c.team.displayName, game.homeTeam.name)) && event.competitions?.[0]?.competitors?.some(c => c.homeAway === 'away' && sameTeam(c.team.displayName, game.awayTeam.name)));
     const competition = match?.competitions?.[0]; if (!competition) return game;
     const home = competition.competitors?.find(c => c.homeAway === 'home'); const away = competition.competitors?.find(c => c.homeAway === 'away');
     const currentSpread = competition.odds?.find(odd => typeof odd.details === 'string' && odd.details.trim())?.details?.trim();
@@ -452,6 +452,11 @@ function extractBroadcastNames(broadcasts?: Array<{ names?: string[] }>): string
 }
 
 function makeResult(games: ScheduleMatch[], week: string, weeks: ScheduleWeek[]) { return { games, weeks, lastUpdated: new Date().toISOString(), hasLiveGames: games.some(game => !game.isCompleted && isLiveStatus(game.status)) }; }
+function scheduleTtl(result: { games?: ScheduleMatch[]; hasLiveGames?: boolean }, requestedDate: string): number {
+  const gameDate = requestedDate || centralDate(new Date());
+  const isGameDay = result.games?.some(game => game.date === gameDate) || false;
+  return result.hasLiveGames || isGameDay ? 60 : 900;
+}
 function isLiveStatus(status: string): boolean {
   const normalized = status.toLowerCase().replace(/[^a-z0-9]/g, '');
   return normalized === 'live' || normalized === 'inprogress' || /^q\d+$/.test(normalized) || normalized.includes('quarter') || normalized.includes('halftime') || normalized.includes('ot');
@@ -486,3 +491,4 @@ function matchesETag(value: string | null, etag: string): boolean {
   });
 }
 function getSeason(url: URL): number { const requested = url.searchParams.get('season'); if (requested && /^\d{4}$/.test(requested)) return Number(requested); const now = new Date(); return now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear(); }
+function getWeek(url: URL): string { const requested = url.searchParams.get('week'); if (!requested) return '1'; const numeric = Number(requested); return /^\d+$/.test(requested) && Number.isSafeInteger(numeric) ? String(numeric) : requested; }

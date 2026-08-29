@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { onRequest } from '../src/api/cfb-schedule.ts';
 
-function request(division?: 'all', etag?: string) {
-  return new Request(`https://rhule-aid.com/api/cfb-schedule?season=2025&week=1${division ? `&division=${division}` : ''}`, etag ? { headers: { 'If-None-Match': etag } } : undefined);
+function request(division?: 'all', etag?: string, week = '1', date?: string) {
+  return new Request(`https://rhule-aid.com/api/cfb-schedule?season=2025&week=${week}${date ? `&date=${date}` : ''}${division ? `&division=${division}` : ''}`, etag ? { headers: { 'If-None-Match': etag } } : undefined);
 }
 
-function context(division?: 'all', etag?: string, cache = new Map<string, string>()): Parameters<typeof onRequest>[0] {
+function context(division?: 'all', etag?: string, cache = new Map<string, string>(), week = '1', date?: string): Parameters<typeof onRequest>[0] {
   return {
-    request: request(division, etag),
+    request: request(division, etag, week, date),
     env: {
       CFBD_API_KEY: 'test-key',
       CFB_SCHEDULE_CACHE: {
@@ -50,6 +50,45 @@ beforeEach(() => {
 });
 
 describe('CFBD division views', () => {
+  it('canonicalizes zero-padded weeks and matches numeric overlay IDs', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]));
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]');
+      if (url.includes('/games?')) {
+        expect(url).toContain('week=1');
+        expect(url).not.toContain('week=01');
+        return new Response(JSON.stringify([cfbdGame(1)]));
+      }
+      if (url.includes('/scoreboard?')) return new Response(JSON.stringify({ events: [{ id: '1', competitions: [{ competitors: [
+        { homeAway: 'home', team: { displayName: 'Nebraska' }, score: '7' },
+        { homeAway: 'away', team: { displayName: 'Iowa' }, score: '3' },
+        ], status: { type: { name: 'In Progress', completed: false } } }] }] }));
+      return new Response(JSON.stringify({ events: [] }));
+    }));
+
+    const response = await onRequest(context(undefined, undefined, new Map(), '01'));
+    const body = await response.json() as { hasLiveGames: boolean; games: Array<{ status: string }> };
+
+    expect(body.games[0]?.status).toBe('In Progress');
+    expect(body.hasLiveGames).toBe(true);
+  });
+
+  it('uses a 60-second cache lifetime for game-day snapshots before live recognition', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]));
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]');
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]));
+      return new Response(JSON.stringify({ events: [] }));
+    }));
+
+    const response = await onRequest(context(undefined, undefined, new Map(), '1', '2025-09-01'));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('public, max-age=60');
+  });
+
   it('recognizes an ESPN In Progress overlay as live', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
