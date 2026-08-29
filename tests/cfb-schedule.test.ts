@@ -126,17 +126,17 @@ describe('CFBD division views', () => {
       if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]');
       if (url.includes('/games?')) return new Response(JSON.stringify([{ ...cfbdGame(401864494), startDate: '2026-08-29T16:00:00.000Z' }]));
       if (url.includes('site.api.espn.com')) return new Response('blocked', { status: 403 });
-      if (url.includes('cdn.espn.com')) return new Response(JSON.stringify({ content: { scoreboard: { events: [{ id: '401864494', date: '2026-08-29T16:00:00.000Z', competitions: [{ competitors: [
+      if (url.includes('cdn.espn.com')) return new Response(JSON.stringify({ content: { sbData: { events: [{ id: '401864494', date: '2026-08-29T16:00:00.000Z', status: { type: { description: 'Halftime', completed: false } }, competitions: [{ competitors: [
         { homeAway: 'home', team: { displayName: 'Nebraska' }, score: '14' },
         { homeAway: 'away', team: { displayName: 'Iowa' }, score: '10' },
-        ], status: { type: { name: 'In Progress', completed: false } } }] }] } } }));
+        ] }] }] } } }));
       return new Response(JSON.stringify({ events: [] }));
     }));
 
     const response = await onRequest(context());
     const body = await response.json() as { hasLiveGames: boolean; games: Array<{ id: string; status: string; homeTeam: { score: number }; awayTeam: { score: number } }> };
 
-    expect(body.games[0]).toMatchObject({ id: '401864494', status: 'In Progress' });
+    expect(body.games[0]).toMatchObject({ id: '401864494', status: 'Halftime' });
     expect(body.games[0]?.homeTeam.score).toBe(14);
     expect(body.games[0]?.awayTeam.score).toBe(10);
     expect(body.hasLiveGames).toBe(true);
