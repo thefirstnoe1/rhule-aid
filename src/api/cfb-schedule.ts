@@ -38,16 +38,17 @@ type ClassifiedScheduleMatch = ScheduleMatch & {
 
 interface ESPNResponse { events: ESPNGame[]; leagues: unknown[] }
 interface ESPNStatusType { description?: string; detail?: string; shortDetail?: string; name?: string; state?: string; completed?: boolean }
+interface ESPNStatus { type?: ESPNStatusType; displayClock?: string; period?: number; detail?: string }
 interface ESPNScoreboardFallbackResponse { content?: { sbData?: { events?: unknown[] }; scoreboard?: { events?: unknown[] } }; events?: unknown[] }
 interface ESPNGame {
   id: string;
   date?: string;
   week?: { number?: number };
-  status?: { type?: ESPNStatusType };
+  status?: ESPNStatus;
   competitions?: Array<{
     date?: string;
     competitors?: Array<{ homeAway: 'home' | 'away'; score?: string; team: { displayName?: string; shortDisplayName?: string; name?: string; abbreviation?: string; logo?: string; conferenceId?: string; location?: string } }>;
-    status?: { type?: { description?: string; detail?: string; shortDetail?: string; name?: string; state?: string; completed?: boolean } };
+    status?: ESPNStatus;
     venue?: { fullName?: string; address?: { city?: string; state?: string; country?: string } };
     broadcasts?: Array<{ names?: string[] }>;
     odds?: Array<{ details?: string }>;
@@ -451,10 +452,15 @@ function mergeOverlay(games: ScheduleMatch[], events: ESPNGame[]): ScheduleMatch
     const home = competition.competitors?.find(c => c.homeAway === 'home'); const away = competition.competitors?.find(c => c.homeAway === 'away');
     const currentSpread = competition.odds?.find(odd => typeof odd.details === 'string' && odd.details.trim())?.details?.trim();
     const broadcast = game.tv === 'TBD' ? extractBroadcastNames(competition.broadcasts) : null;
-    const statusType = competition.status?.type || match?.status?.type;
+    const competitionStatus = competition.status;
+    const eventStatus = match?.status;
+    const statusType = competitionStatus?.type || eventStatus?.type;
     const overlayStatus = statusType && [statusType.description, statusType.detail, statusType.shortDetail, statusType.name, statusType.state]
       .find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim();
-    return { ...game, ...(home ? { homeTeam: { ...game.homeTeam, score: Number(home.score) || 0 } } : {}), ...(away ? { awayTeam: { ...game.awayTeam, score: Number(away.score) || 0 } } : {}), ...(overlayStatus ? { status: overlayStatus } : {}), ...(statusType?.completed !== undefined ? { isCompleted: statusType.completed } : {}), tv: broadcast || game.tv, spread: currentSpread || game.spread };
+    const displayClock = competitionStatus?.displayClock || eventStatus?.displayClock;
+    const period = competitionStatus?.period ?? eventStatus?.period;
+    const detail = competitionStatus?.detail || eventStatus?.detail || statusType?.detail;
+    return { ...game, ...(home ? { homeTeam: { ...game.homeTeam, score: Number(home.score) || 0 } } : {}), ...(away ? { awayTeam: { ...game.awayTeam, score: Number(away.score) || 0 } } : {}), ...(overlayStatus ? { status: overlayStatus } : {}), ...(statusType?.completed !== undefined ? { isCompleted: statusType.completed } : {}), ...(displayClock ? { displayClock } : {}), ...(period !== undefined ? { period } : {}), ...(detail ? { detail } : {}), tv: broadcast || game.tv, spread: currentSpread || game.spread };
   });
 }
 

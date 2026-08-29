@@ -27,6 +27,9 @@ type Game = {
   isCompleted: boolean;
   spread: string | null;
   division?: string;
+  displayClock?: string;
+  period?: string;
+  detail?: string;
 };
 
 export type CFBScheduleData = {
@@ -400,6 +403,7 @@ function GameCard({ game, timezone, noSpoilers }: { game: Game; timezone: string
             <span className={`rounded-full px-3 py-1 text-xs font-black uppercase tracking-[0.14em] ${status === 'live' ? 'bg-[var(--scarlet)] text-white' : 'border border-[var(--border)] text-[var(--muted)]'}`}>
               {game.status}
             </span>
+            {status === 'live' && <LiveContext game={game} />}
             {game.tv !== 'TBD' && <span className="rounded-full border border-[var(--border)] px-3 py-1 text-xs font-black uppercase tracking-[0.14em] text-[var(--muted)]">{game.tv}</span>}
           </div>
           <time className="text-sm font-black text-[var(--foreground)]">{formatGameTime(game, timezone)}</time>
@@ -440,7 +444,10 @@ function CompactGame({ game, timezone, noSpoilers }: { game: Game; timezone: str
           <MiniTeam team={game.homeTeam} align="right" showScore={!noSpoilers} />
         </div>
         <div className="text-xs font-black uppercase tracking-[0.14em] text-[var(--muted)] md:text-center">{game.tv}</div>
-        <div className={`rounded-full px-3 py-1 text-center text-xs font-black uppercase tracking-[0.14em] ${status === 'live' ? 'bg-[var(--scarlet)] text-white' : 'border border-[var(--border)] text-[var(--muted)]'}`}>{game.status}</div>
+        <div className="grid gap-1">
+          <div className={`rounded-full px-3 py-1 text-center text-xs font-black uppercase tracking-[0.14em] ${status === 'live' ? 'bg-[var(--scarlet)] text-white' : 'border border-[var(--border)] text-[var(--muted)]'}`}>{game.status}</div>
+          {status === 'live' && <LiveContext game={game} className="text-center" />}
+        </div>
       </div>
     </SurfaceCard>
   );
@@ -458,6 +465,7 @@ function TVGame({ game, timezone, noSpoilers }: { game: Game; timezone: string; 
       <div className="grid gap-3 p-4">
         <MiniTeam team={game.awayTeam} showScore={!noSpoilers} />
         <MiniTeam team={game.homeTeam} showScore={!noSpoilers} />
+        {status === 'live' && <LiveContext game={game} />}
         <div className="truncate text-xs font-bold text-[var(--muted)]">{game.venue}</div>
       </div>
     </SurfaceCard>
@@ -493,6 +501,23 @@ function TeamRow({ team, showScore, winner }: { team: Team; showScore: boolean; 
       <div className="text-3xl font-black tracking-[-0.08em]">{showScore ? team.score : ''}</div>
     </div>
   );
+}
+
+function LiveContext({ game, className = '' }: { game: Game; className?: string }) {
+  const context = getLiveContext(game);
+  if (!context) return null;
+
+  return <span className={`text-[0.65rem] font-black uppercase tracking-[0.14em] text-[var(--scarlet)] ${className}`}>{context}</span>;
+}
+
+function getLiveContext(game: Game) {
+  const period = game.period?.trim();
+  const displayClock = game.displayClock?.trim();
+  const detail = game.detail?.trim();
+
+  if (period || displayClock) return [period, displayClock].filter(Boolean).join(' · ');
+  if (detail && detail.toLowerCase() !== game.status.trim().toLowerCase()) return detail;
+  return '';
 }
 
 function getGameStatus(game: Game) {
