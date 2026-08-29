@@ -107,6 +107,8 @@ describe('CFBD division views', () => {
 
     expect(body.games[0]?.status).toBe('In Progress');
     expect(body.hasLiveGames).toBe(true);
+    const scoreboardCall = vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/scoreboard?'));
+    expect(scoreboardCall?.[1]).toMatchObject({ cache: 'no-store' });
   });
 
   it('excludes completed ESPN overlays from live games', async () => {

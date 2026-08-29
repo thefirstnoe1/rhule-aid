@@ -325,7 +325,7 @@ function hasKickoffTime(datetime: string): boolean {
 
 async function fetchScoreboard(season: number, week: string, date: string): Promise<ESPNGame[]> {
   const params = new URLSearchParams({ groups: '80', limit: '1000', week, dates: date || String(season), seasontype: '2' });
-  const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?${params}`, { signal: AbortSignal.timeout(5000) });
+  const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?${params}`, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
   if (!response.ok) throw new Error(`ESPN scoreboard failed: ${response.status}`);
   const data: unknown = await response.json();
   if (!data || typeof data !== 'object' || !Array.isArray((data as ESPNResponse).events)) throw new Error('Invalid ESPN scoreboard response');
