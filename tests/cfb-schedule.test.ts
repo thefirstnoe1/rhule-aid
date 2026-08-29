@@ -108,6 +108,7 @@ describe('CFBD division views', () => {
     expect(body.games[0]?.status).toBe('In Progress');
     expect(body.hasLiveGames).toBe(true);
     const scoreboardCall = vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/scoreboard?'));
+    expect(String(scoreboardCall?.[0])).toMatch(/[?&]dates=\d{8}(?:&|$)/);
     expect(scoreboardCall?.[1]).toMatchObject({
       cache: 'no-store',
       headers: {

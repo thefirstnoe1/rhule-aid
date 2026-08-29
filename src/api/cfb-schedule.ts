@@ -324,7 +324,7 @@ function hasKickoffTime(datetime: string): boolean {
 }
 
 async function fetchScoreboard(season: number, week: string, date: string): Promise<ESPNGame[]> {
-  const params = new URLSearchParams({ groups: '80', limit: '1000', week, dates: date || String(season), seasontype: '2' });
+  const params = new URLSearchParams({ groups: '80', limit: '1000', week, dates: formatScoreboardDate(date), seasontype: '2' });
   const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?${params}`, {
     headers: {
       Accept: 'application/json',
@@ -338,6 +338,10 @@ async function fetchScoreboard(season: number, week: string, date: string): Prom
   const data: unknown = await response.json();
   if (!data || typeof data !== 'object' || !Array.isArray((data as ESPNResponse).events)) throw new Error('Invalid ESPN scoreboard response');
   return (data as ESPNResponse).events;
+}
+
+function formatScoreboardDate(date: string): string {
+  return date ? date.replace(/-/g, '') : centralDate(new Date()).replace(/-/g, '');
 }
 
 async function fetchCoreFallback(season: number, week: string): Promise<ScheduleMatch[]> {
