@@ -61,8 +61,9 @@ const CFBSchedule: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
 
-  const formatGameTime = useCallback((datetime: string): string => {
-    const date = new Date(datetime);
+  const formatGameTime = useCallback((game: Game): string => {
+    if (game.time === 'TBD' || !game.datetime || Number.isNaN(new Date(game.datetime).getTime())) return 'TBD';
+    const date = new Date(game.datetime);
     
     return date.toLocaleTimeString('en-US', {
       hour: 'numeric',
@@ -195,7 +196,7 @@ const CFBSchedule: React.FC = () => {
   const GameCard: React.FC<{ game: Game }> = ({ game }) => {
     const gameStatus = getGameStatusCategory(game.status, game.isCompleted);
     const statusClass = gameStatus === 'live' ? 'live' : gameStatus === 'completed' ? 'completed' : 'scheduled';
-    const formattedTime = formatGameTime(game.datetime);
+    const formattedTime = formatGameTime(game);
 
     return (
       <div className={`game-card ${statusClass}`}>

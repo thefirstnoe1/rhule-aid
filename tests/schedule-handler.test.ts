@@ -10,7 +10,7 @@ vi.mock("cfbd", () => ({
 
 const now = new Date("2026-07-14T12:00:00.000Z").getTime();
 const schedule = [{ opponent: "Iowa", date: "Saturday", isHome: true }];
-const cacheKey = "nebraska_schedule_2025_cfbd_huskers_v7";
+const cacheKey = "nebraska_schedule_2025_cfbd_huskers_v9";
 
 function createCache(initial: Record<string, string> = {}) {
   const values = new Map(Object.entries(initial));
@@ -22,7 +22,7 @@ function createCache(initial: Record<string, string> = {}) {
 
 function cachedSchedule(payload = schedule, freshUntil = now + 60_000, retainUntil = now + 600_000) {
   return JSON.stringify({
-    schema: "v7",
+    schema: "v9",
     payload,
     dataUpdatedAt: now - 60_000,
     freshUntil,
@@ -171,6 +171,70 @@ describe("handleScheduleRequest", () => {
     expect(confirmed.kickoffAt).toBe("2026-11-01T00:00:00.000Z");
     expect(confirmed.time).toContain("7:00 PM");
     expect(confirmed.venue.timezone).toBeNull();
+  });
+
+  it("uses canonical kickoff instants across CST and CDT transitions", async () => {
+    const cache = createCache();
+    vi.mocked(getGames).mockResolvedValue({ data: [
+      { homeTeam: "Nebraska", awayTeam: "Iowa", startDate: "2026-11-07T01:00:00.000Z", startTimeTBD: false },
+      { homeTeam: "Nebraska", awayTeam: "Minnesota", startDate: "2026-11-14T17:00:00.000Z", startTimeTBD: false },
+      { homeTeam: "Nebraska", awayTeam: "Wisconsin", startDate: "2026-09-05T18:00:00.000Z", startTimeTBD: false },
+    ] } as never);
+    vi.mocked(getMedia).mockResolvedValue({ data: [] } as never);
+
+    const body = await (await handleScheduleRequest(request(), env(cache))).json();
+    const byOpponent = (opponent: string) => body.data.find((game: { opponent: string }) => game.opponent === opponent);
+
+    expect(byOpponent("Iowa").kickoffAt).toBe("2026-11-07T01:00:00.000Z");
+    expect(byOpponent("Iowa").time).toContain("7:00 PM");
+    expect(byOpponent("Minnesota").time).toContain("11:00 AM");
+    expect(byOpponent("Wisconsin").time).toContain("1:00 PM");
+  });
+
+  it("clears a placeholder kickoffAt for an official TBA override", async () => {
+    const cache = createCache();
+    vi.mocked(getGames).mockResolvedValue({ data: [{ homeTeam: "Nebraska", awayTeam: "Iowa", startDate: "2025-09-05T00:00:00.000Z", startTimeTBD: false }] } as never);
+    vi.mocked(getMedia).mockResolvedValue({ data: [] } as never);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("huskers.com")
+      ? new Response(JSON.stringify({ data: [{ datetime: "2025-09-05T00:00:00.000Z", tba: true, opponent_name: "Iowa", venue: "Memorial Stadium", schedule_event_links: [] }] }), { status: 200 })
+      : new Response(JSON.stringify({ data: [] }), { status: 200 })));
+
+    const body = await (await handleScheduleRequest(request(), env(cache))).json();
+    const game = body.data[0];
+    expect(game.kickoffAt).toBeUndefined();
+    expect(game.kickoffStatus).toBe("tba");
+    expect(game.time).toBe("TBD");
+  });
+
+  it("locks official time_tba events to TBD without retaining placeholder kickoffs", async () => {
+    const cache = createCache();
+    const tbaOpponents = ["Iowa", "Oregon", "Minnesota", "Wisconsin", "Illinois", "Michigan", "UCLA"];
+    const confirmedOpponents = ["Indiana", "Ohio State", "Penn State", "Rutgers", "USC"];
+    const opponents = [...tbaOpponents, ...confirmedOpponents];
+    vi.mocked(getGames).mockResolvedValue({ data: opponents.map((opponent, index) => ({
+      homeTeam: "Nebraska",
+      awayTeam: opponent,
+      startDate: `2025-09-${String(index + 1).padStart(2, "0")}T18:00:00.000Z`,
+      startTimeTBD: false,
+    })) } as never);
+    vi.mocked(getMedia).mockResolvedValue({ data: [] } as never);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("huskers.com")
+      ? new Response(JSON.stringify({ data: opponents.map((opponent, index) => ({
+        datetime: `2025-09-${String(index + 1).padStart(2, "0")}T18:00:00.000Z`,
+        tba: tbaOpponents.includes(opponent) ? "time_tba" : false,
+        opponent_name: opponent,
+        schedule_event_links: [],
+      })) }), { status: 200 })
+      : new Response(JSON.stringify({ events: [] }), { status: 200 })));
+
+    const body = await (await handleScheduleRequest(request(), env(cache))).json();
+    const tbaGames = body.data.filter((game: { kickoffStatus: string }) => game.kickoffStatus === "tba");
+
+    expect(tbaGames).toHaveLength(7);
+    expect(tbaGames.map((game: { opponent: string }) => game.opponent)).toContain("Oregon");
+    expect(tbaGames.every((game: { time: string; kickoffAt?: string; fieldProvenance?: { kickoffAt?: string } }) =>
+      game.time === "TBD" && game.kickoffAt === undefined && game.fieldProvenance?.kickoffAt === "huskers"
+    )).toBe(true);
   });
 
   it("matches ESPN media by teams when media date differs by one day", async () => {

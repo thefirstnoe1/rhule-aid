@@ -1,12 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { onRequest } from '../src/api/cfb-schedule.ts';
 
-function request(division?: 'all') {
-  return new Request(`https://rhule-aid.com/api/cfb-schedule?season=2025&week=1${division ? `&division=${division}` : ''}`);
+function request(division?: 'all', etag?: string) {
+  return new Request(`https://rhule-aid.com/api/cfb-schedule?season=2025&week=1${division ? `&division=${division}` : ''}`, etag ? { headers: { 'If-None-Match': etag } } : undefined);
 }
 
-function context(division?: 'all'): Parameters<typeof onRequest>[0] {
-  return { request: request(division), env: { CFBD_API_KEY: 'test-key' } } as Parameters<typeof onRequest>[0];
+function context(division?: 'all', etag?: string, cache = new Map<string, string>()): Parameters<typeof onRequest>[0] {
+  return {
+    request: request(division, etag),
+    env: {
+      CFBD_API_KEY: 'test-key',
+      CFB_SCHEDULE_CACHE: {
+        get: async (key: string) => cache.get(key) || null,
+        put: async (key: string, value: string) => { cache.set(key, value); },
+      },
+    },
+  } as Parameters<typeof onRequest>[0];
 }
 
 function cfbdGame(id: number, homeId = 1, awayId = 2) {
@@ -41,6 +50,46 @@ beforeEach(() => {
 });
 
 describe('CFBD division views', () => {
+  it('emits a quoted SHA-256 ETag for successful schedule payloads', async () => {
+    const response = await onRequest(context());
+    const body = await response.text();
+    const etag = response.headers.get('ETag');
+
+    expect(response.status).toBe(200);
+    expect(etag).toMatch(/^"[0-9a-f]{64}"$/);
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body));
+    const expected = `"${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')}"`;
+    expect(etag).toBe(expected);
+  });
+
+  it('returns 304 for a matching ETag while retaining cache and CORS headers', async () => {
+    const cache = new Map<string, string>();
+    const first = await onRequest(context(undefined, undefined, cache));
+    const etag = first.headers.get('ETag');
+    const second = await onRequest(context(undefined, etag || undefined, cache));
+
+    expect(second.status).toBe(304);
+    expect(await second.text()).toBe('');
+    expect(second.headers.get('ETag')).toBe(etag);
+    expect(second.headers.get('Cache-Control')).toBe('public, max-age=900');
+    expect(second.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
+
+  it('emits different ETags for changed schedule payloads', async () => {
+    const first = await onRequest(context());
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]));
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]');
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(99)]));
+      return new Response(JSON.stringify({ events: [] }));
+    }));
+    const second = await onRequest(context('all'));
+
+    expect(second.status).toBe(200);
+    expect(second.headers.get('ETag')).not.toBe(first.headers.get('ETag'));
+  });
+
   it('does not assign a kickoff time to CFBD TBD games', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

@@ -73,7 +73,7 @@ export async function onRequest(context: Context): Promise<Response> {
   const division = url.searchParams.get('division') === 'all' ? 'all' : 'fbs';
   const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:${season}:${week}:${date || 'current'}:${division}`;
   const cached = await readCache(env, cacheKey);
-  if (cached) return jsonResponse(cached, 200, 900);
+  if (cached) return jsonResponse(cached, 200, 900, request);
 
   let games: ScheduleMatch[] = [];
   let calendarWeeks: ScheduleWeek[] | null = null;
@@ -122,7 +122,7 @@ export async function onRequest(context: Context): Promise<Response> {
   const result = makeResult(games, week, calendarWeeks || [{ label: `Week ${week}`, value: week }]);
   const ttl = result.hasLiveGames ? 60 : 900;
   await writeCache(env, cacheKey, result, ttl);
-  return jsonResponse(result, 200, ttl);
+  return jsonResponse(result, 200, ttl, request);
 }
 
 async function fetchCFBD(season: number, week: string, key: string, division: 'fbs' | 'all'): Promise<CFBDGame[]> {
@@ -451,5 +451,31 @@ function extractBroadcastNames(broadcasts?: Array<{ names?: string[] }>): string
 function makeResult(games: ScheduleMatch[], week: string, weeks: ScheduleWeek[]) { return { games, weeks, lastUpdated: new Date().toISOString(), hasLiveGames: games.some(game => !game.isCompleted && /q|half|ot|quarter/i.test(game.status)) }; }
 async function readCache(env: Context['env'], key: string): Promise<any | null> { if (!env.CFB_SCHEDULE_CACHE) return null; try { const value = await env.CFB_SCHEDULE_CACHE.get(key); return value ? JSON.parse(value) : null; } catch { return null; } }
 async function writeCache(env: Context['env'], key: string, value: unknown, ttl: number): Promise<void> { if (env.CFB_SCHEDULE_CACHE && Array.isArray((value as { games?: unknown[] }).games) && (value as { games: unknown[] }).games.length) try { await env.CFB_SCHEDULE_CACHE.put(key, JSON.stringify(value), { expirationTtl: ttl }); } catch (error) { console.warn('Failed to write CFB schedule cache:', error); } }
-function jsonResponse(body: unknown, status: number, maxAge: number): Response { return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': maxAge ? `public, max-age=${maxAge}` : 'no-store' } }); }
+async function jsonResponse(body: unknown, status: number, maxAge: number, request?: Request): Promise<Response> {
+  const serialized = JSON.stringify(body);
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Cache-Control': maxAge ? `public, max-age=${maxAge}` : 'no-store',
+  });
+  if (status !== 200) return new Response(serialized, { status, headers });
+
+  const etag = await sha256ETag(serialized);
+  headers.set('ETag', etag);
+  if (request && matchesETag(request.headers.get('If-None-Match'), etag)) return new Response(null, { status: 304, headers });
+  return new Response(serialized, { status, headers });
+}
+
+async function sha256ETag(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return `"${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')}"`;
+}
+
+function matchesETag(value: string | null, etag: string): boolean {
+  if (!value) return false;
+  return value.split(',').some(candidate => {
+    const normalized = candidate.trim();
+    return normalized === '*' || normalized === etag || normalized === `W/${etag}`;
+  });
+}
 function getSeason(url: URL): number { const requested = url.searchParams.get('season'); if (requested && /^\d{4}$/.test(requested)) return Number(requested); const now = new Date(); return now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear(); }

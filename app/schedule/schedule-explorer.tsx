@@ -8,6 +8,8 @@ export type ScheduleGame = {
   opponent: string;
   opponentId?: number;
   time: string;
+  kickoffAt?: string;
+  kickoffStatus?: 'confirmed' | 'tba' | 'unconfirmed';
   location: string;
   network?: string;
   tvNetwork: string;
@@ -349,42 +351,18 @@ function formatShortDate(dateString: string) {
 }
 
 function formatGameTime(game: ScheduleGame, timezone: string) {
-  if (!game.time || game.time === 'TBD' || !game.date || game.date === 'TBD') {
+  if (game.kickoffStatus !== 'confirmed') {
     return 'TBD';
   }
 
-  if (timezone === 'America/Chicago' && /\bC[DS]T\b/.test(game.time)) {
-    return game.time;
-  }
-
-  const date = new Date(game.date);
-  if (Number.isNaN(date.getTime())) {
-    return `${game.time} CT`;
-  }
-
-  const [timePart, period, abbreviation] = game.time.split(' ');
-  if (!timePart) {
-    return `${game.time} CT`;
-  }
-
-  const [rawHour, rawMinute = '0'] = timePart.split(':');
-  let hour = Number(rawHour);
-  const minute = Number(rawMinute);
-
-  if (Number.isNaN(hour) || Number.isNaN(minute)) {
-    return `${game.time} CT`;
-  }
-
-  if (period?.toLowerCase() === 'pm' && hour !== 12) hour += 12;
-  if (period?.toLowerCase() === 'am' && hour === 12) hour = 0;
-
-  const offsetHours = abbreviation === 'CST' ? 6 : 5;
-  const centralDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), hour + offsetHours, minute));
+  if (!game.kickoffAt) return timezone === 'America/Chicago' && game.time && game.time !== 'TBD' ? game.time : 'TBD';
+  const date = new Date(game.kickoffAt);
+  if (Number.isNaN(date.getTime())) return 'TBD';
 
   return new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
     hour: 'numeric',
     minute: '2-digit',
     timeZoneName: 'short'
-  }).format(centralDate);
+  }).format(date);
 }

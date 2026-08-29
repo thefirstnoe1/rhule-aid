@@ -70,12 +70,20 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [noSpoilers, setNoSpoilers] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(Boolean(initialData.error));
+  const [error, setError] = useState(Boolean(initialData.error && initialData.games.length === 0));
+  const [staleMessage, setStaleMessage] = useState(initialData.error && initialData.games.length > 0 ? 'Schedule refresh failed. Showing the last loaded schedule.' : '');
   const [announcement, setAnnouncement] = useState(initialData.error ? 'Unable to load schedule data.' : '');
   const loadingRef = useRef(false);
   const requestIdRef = useRef(0);
+  const etagByResourceRef = useRef(new Map<string, string>());
+  const filtersRef = useRef(filters);
+  const scheduleDataRef = useRef(scheduleData);
+  const hasLoadedBoardRef = useRef(!initialData.error || initialData.games.length > 0);
   // Server-rendered data uses backend default FBS; hydrate board with explicit all.
   const divisionRef = useRef<Filters['division']>('FBS');
+
+  filtersRef.current = filters;
+  scheduleDataRef.current = scheduleData;
 
   const filteredGames = useMemo(() => {
     return scheduleData.games.filter((game) => {
@@ -111,15 +119,17 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
     return getGameStatus(game) === 'live';
   }), [filters.week, scheduleData.games]);
 
-  const loadSchedule = useCallback(async (week = filters.week) => {
+  const loadSchedule = useCallback(async (week = filtersRef.current.week) => {
     if (loadingRef.current) return;
 
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
-    const division = filters.division;
+    const division = filtersRef.current.division;
+    const resourceKey = `${week}|${division}`;
     loadingRef.current = true;
     setLoading(true);
     setError(false);
+    setStaleMessage('');
     setAnnouncement(week ? `Loading week ${week}.` : 'Refreshing current board.');
 
     try {
@@ -129,7 +139,16 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
       // response, then get narrowed locally because backend supports only FBS or explicit all.
       if (division !== 'FBS') url.searchParams.set('division', 'all');
 
-      const response = await fetch(url);
+      const etag = etagByResourceRef.current.get(resourceKey);
+      const response = await fetch(url, etag ? { headers: { 'If-None-Match': etag } } : undefined);
+      const returnedEtag = response.headers.get('ETag');
+      if (returnedEtag) etagByResourceRef.current.set(resourceKey, returnedEtag);
+      if (response.status === 304) {
+        if (requestId !== requestIdRef.current) return;
+        setStaleMessage('');
+        setAnnouncement('Schedule is up to date.');
+        return;
+      }
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const data = await response.json() as CFBScheduleData;
@@ -144,17 +163,24 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
         lastUpdated: data.lastUpdated,
         hasLiveGames: Boolean(data.hasLiveGames)
       });
-      setFilters((current) => ({ ...current, week: selectedWeek }));
+      hasLoadedBoardRef.current = true;
+      setError(false);
+      setStaleMessage('');
+      setFilters((current) => current.week === selectedWeek ? current : { ...current, week: selectedWeek });
       setAnnouncement(week ? `Week ${week} loaded.` : 'Current board refreshed.');
     } catch (loadError) {
       console.error('Error loading CFB schedule:', loadError);
-      setError(true);
-      setAnnouncement(week ? `Unable to load week ${week}. Existing schedule data remains displayed.` : 'Unable to refresh the current board. Existing schedule data remains displayed.');
+      const hasLoadedBoard = hasLoadedBoardRef.current || scheduleDataRef.current.games.length > 0;
+      setError(!hasLoadedBoard);
+      setStaleMessage(hasLoadedBoard ? 'Schedule refresh failed. Showing the last loaded schedule.' : '');
+      setAnnouncement(hasLoadedBoard
+        ? (week ? `Unable to load week ${week}. Existing schedule data remains displayed.` : 'Unable to refresh the current board. Existing schedule data remains displayed.')
+        : 'Unable to load schedule data.');
     } finally {
       loadingRef.current = false;
       setLoading(false);
     }
-  }, [filters.division, filters.week]);
+  }, []);
 
   useEffect(() => {
     if (divisionRef.current === filters.division) return;
@@ -170,10 +196,25 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
     if (!autoRefresh || !hasLiveGames) return undefined;
 
     const interval = window.setInterval(() => {
-      void loadSchedule();
+      if (document.visibilityState === 'visible' && navigator.onLine) void loadSchedule();
     }, 300000);
 
     return () => window.clearInterval(interval);
+  }, [autoRefresh, hasLiveGames, loadSchedule]);
+
+  useEffect(() => {
+    if (!autoRefresh || !hasLiveGames) return undefined;
+
+    const resync = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) void loadSchedule();
+    };
+    document.addEventListener('visibilitychange', resync);
+    window.addEventListener('online', resync);
+
+    return () => {
+      document.removeEventListener('visibilitychange', resync);
+      window.removeEventListener('online', resync);
+    };
   }, [autoRefresh, hasLiveGames, loadSchedule]);
 
   return (
@@ -269,6 +310,13 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
       </SurfaceCard>
 
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</div>
+
+      {staleMessage && (
+        <SurfaceCard className="mb-6 rounded-[1.25rem] border-[var(--scarlet)] bg-[color-mix(in_srgb,var(--scarlet)_8%,var(--surface-strong))] px-5 py-4">
+          <p className="text-sm font-bold text-[var(--foreground)]">{staleMessage}</p>
+          <p className="mt-1 text-xs text-[var(--muted)]">Refresh when you are back online for the latest scores.</p>
+        </SurfaceCard>
+      )}
 
       {error && (
         <SurfaceCard className="mb-6 rounded-[1.75rem] p-6 text-center">

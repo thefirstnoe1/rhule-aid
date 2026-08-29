@@ -6,7 +6,7 @@ import { emitCacheEvent } from '../lib/structured-event-log';
 import { readRetainedScheduleCache } from '../lib/schedule-cache';
 import type { CanonicalScheduleGame, ProviderState, ProviderStates } from '../contracts/gameday';
 
-const SCHEDULE_CACHE_SCHEMA = 'v7';
+const SCHEDULE_CACHE_SCHEMA = 'v9';
 const CACHE_TTL = 60 * 60 * 6;
 const CACHE_RETAIN_TTL = 60 * 60 * 24 * 7;
 const PROVIDER_DEADLINE_MS = 8_000;
@@ -529,12 +529,13 @@ async function fetchHuskerScheduleOverrides(season: number): Promise<HuskerFetch
         continue;
       }
 
+      const officialTba = isOfficialTba(event.tba);
       const date = formatHuskerDate(event.datetime);
-      const time = formatHuskerTime(event.datetime, event.tba, event.tba_text);
+      const time = officialTba ? 'TBD' : formatHuskerTime(event.datetime, event.tba, event.tba_text);
       const location = decodeHtml(event.venue || event.location || '');
       const network = extractNetworkFromLinks(event.schedule_event_links || []);
       const opponentLogo = event.opponent_logo?.url || event.opponent?.officialLogo?.url || event.opponent?.customLogo?.url;
-      const officialDate = event.tba === true ? null : parseConfirmedKickoff(event.datetime, event.tba === false);
+      const officialDate = officialTba ? null : parseConfirmedKickoff(event.datetime, event.tba === false);
 
       overrides.set(normalizeOpponentKey(opponent), {
         opponent,
@@ -543,7 +544,7 @@ async function fetchHuskerScheduleOverrides(season: number): Promise<HuskerFetch
         ...(location ? { location: normalizeHuskerLocation(location) } : {}),
         network: network || 'TBD',
         ...(officialDate ? { kickoffAt: officialDate } : {}),
-        ...(event.tba === true ? { kickoffStatus: 'tba' as const } : officialDate ? { kickoffStatus: 'confirmed' as const } : {}),
+        ...(officialTba ? { kickoffStatus: 'tba' as const } : officialDate ? { kickoffStatus: 'confirmed' as const } : {}),
         ...(opponentLogo ? { opponentLogo } : {})
       });
     }
@@ -553,6 +554,11 @@ async function fetchHuskerScheduleOverrides(season: number): Promise<HuskerFetch
     console.error('Huskers schedule override error:', safeError(error));
     return { overrides: new Map(), state: isTimeout(error) ? 'timeout' : 'error' };
   }
+}
+
+function isOfficialTba(value: unknown): boolean {
+  if (value === true) return true;
+  return typeof value === 'string' && /^(?:time_)?tba$|^tbd$/i.test(value.trim());
 }
 
 function applyHuskerOverrides(games: ScheduleGame[], overrides: Map<string, HuskerScheduleOverride>): ScheduleGame[] {
@@ -579,9 +585,10 @@ function applyHuskerOverrides(games: ScheduleGame[], overrides: Map<string, Husk
 }
 
 function deriveVisibleKickoff(game: ScheduleGame): ScheduleGame {
-  if (game.kickoffStatus !== 'confirmed' || !game.kickoffAt) return game;
+  if (game.kickoffStatus !== 'confirmed') return { ...game, time: 'TBD', kickoffAt: undefined };
+  if (!game.kickoffAt) return { ...game, time: 'TBD', kickoffAt: undefined };
   const kickoff = new Date(game.kickoffAt);
-  if (Number.isNaN(kickoff.getTime())) return game;
+  if (Number.isNaN(kickoff.getTime())) return { ...game, time: 'TBD', kickoffAt: undefined };
   return {
     ...game,
     date: formatGameDate(kickoff, true),
