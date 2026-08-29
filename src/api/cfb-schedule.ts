@@ -44,7 +44,7 @@ interface ESPNGame {
   competitions?: Array<{
     date?: string;
     competitors?: Array<{ homeAway: 'home' | 'away'; score?: string; team: { displayName?: string; shortDisplayName?: string; name?: string; abbreviation?: string; logo?: string; conferenceId?: string; location?: string } }>;
-    status?: { type?: { description?: string; completed?: boolean } };
+    status?: { type?: { description?: string; detail?: string; shortDetail?: string; name?: string; state?: string; completed?: boolean } };
     venue?: { fullName?: string; address?: { city?: string; state?: string; country?: string } };
     broadcasts?: Array<{ names?: string[] }>;
     odds?: Array<{ details?: string }>;
@@ -412,7 +412,10 @@ function mergeOverlay(games: ScheduleMatch[], events: ESPNGame[]): ScheduleMatch
     const home = competition.competitors?.find(c => c.homeAway === 'home'); const away = competition.competitors?.find(c => c.homeAway === 'away');
     const currentSpread = competition.odds?.find(odd => typeof odd.details === 'string' && odd.details.trim())?.details?.trim();
     const broadcast = game.tv === 'TBD' ? extractBroadcastNames(competition.broadcasts) : null;
-    return { ...game, ...(home ? { homeTeam: { ...game.homeTeam, score: Number(home.score) || 0 } } : {}), ...(away ? { awayTeam: { ...game.awayTeam, score: Number(away.score) || 0 } } : {}), ...(competition.status?.type?.description ? { status: competition.status.type.description } : {}), ...(competition.status?.type?.completed !== undefined ? { isCompleted: competition.status.type.completed } : {}), tv: broadcast || game.tv, spread: currentSpread || game.spread };
+    const statusType = competition.status?.type;
+    const overlayStatus = statusType && [statusType.description, statusType.detail, statusType.shortDetail, statusType.name, statusType.state]
+      .find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim();
+    return { ...game, ...(home ? { homeTeam: { ...game.homeTeam, score: Number(home.score) || 0 } } : {}), ...(away ? { awayTeam: { ...game.awayTeam, score: Number(away.score) || 0 } } : {}), ...(overlayStatus ? { status: overlayStatus } : {}), ...(statusType?.completed !== undefined ? { isCompleted: statusType.completed } : {}), tv: broadcast || game.tv, spread: currentSpread || game.spread };
   });
 }
 
@@ -448,7 +451,11 @@ function extractBroadcastNames(broadcasts?: Array<{ names?: string[] }>): string
   return unique.find(name => name === 'ESPN+') || unique.join(', ') || null;
 }
 
-function makeResult(games: ScheduleMatch[], week: string, weeks: ScheduleWeek[]) { return { games, weeks, lastUpdated: new Date().toISOString(), hasLiveGames: games.some(game => !game.isCompleted && /q|half|ot|quarter/i.test(game.status)) }; }
+function makeResult(games: ScheduleMatch[], week: string, weeks: ScheduleWeek[]) { return { games, weeks, lastUpdated: new Date().toISOString(), hasLiveGames: games.some(game => !game.isCompleted && isLiveStatus(game.status)) }; }
+function isLiveStatus(status: string): boolean {
+  const normalized = status.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return normalized === 'live' || normalized === 'inprogress' || /^q\d+$/.test(normalized) || normalized.includes('quarter') || normalized.includes('halftime') || normalized.includes('ot');
+}
 async function readCache(env: Context['env'], key: string): Promise<any | null> { if (!env.CFB_SCHEDULE_CACHE) return null; try { const value = await env.CFB_SCHEDULE_CACHE.get(key); return value ? JSON.parse(value) : null; } catch { return null; } }
 async function writeCache(env: Context['env'], key: string, value: unknown, ttl: number): Promise<void> { if (env.CFB_SCHEDULE_CACHE && Array.isArray((value as { games?: unknown[] }).games) && (value as { games: unknown[] }).games.length) try { await env.CFB_SCHEDULE_CACHE.put(key, JSON.stringify(value), { expirationTtl: ttl }); } catch (error) { console.warn('Failed to write CFB schedule cache:', error); } }
 async function jsonResponse(body: unknown, status: number, maxAge: number, request?: Request): Promise<Response> {

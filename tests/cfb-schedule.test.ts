@@ -50,6 +50,47 @@ beforeEach(() => {
 });
 
 describe('CFBD division views', () => {
+  it('recognizes an ESPN In Progress overlay as live', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]));
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]');
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]));
+      if (url.includes('/scoreboard?')) return new Response(JSON.stringify({ events: [{ id: 'espn-1', competitions: [{ competitors: [
+        { homeAway: 'home', team: { displayName: 'Nebraska' }, score: '7' },
+        { homeAway: 'away', team: { displayName: 'Iowa' }, score: '3' },
+      ], status: { type: { state: 'in', name: 'In Progress', completed: false } } }] }] }));
+      return new Response(JSON.stringify({ events: [] }));
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { hasLiveGames: boolean; games: Array<{ status: string }> };
+
+    expect(body.games[0]?.status).toBe('In Progress');
+    expect(body.hasLiveGames).toBe(true);
+  });
+
+  it('excludes completed ESPN overlays from live games', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]));
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]');
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]));
+      if (url.includes('/scoreboard?')) return new Response(JSON.stringify({ events: [{ id: 'espn-1', competitions: [{ competitors: [
+        { homeAway: 'home', team: { displayName: 'Nebraska' }, score: '7' },
+        { homeAway: 'away', team: { displayName: 'Iowa' }, score: '3' },
+      ], status: { type: { state: 'post', detail: 'Final', completed: true } } }] }] }));
+      return new Response(JSON.stringify({ events: [] }));
+    }));
+
+    const response = await onRequest(context());
+    const body = await response.json() as { hasLiveGames: boolean; games: Array<{ status: string; isCompleted: boolean }> };
+
+    expect(body.games[0]?.status).toBe('Final');
+    expect(body.games[0]?.isCompleted).toBe(true);
+    expect(body.hasLiveGames).toBe(false);
+  });
+
   it('emits a quoted SHA-256 ETag for successful schedule payloads', async () => {
     const response = await onRequest(context());
     const body = await response.text();

@@ -496,8 +496,9 @@ function TeamRow({ team, showScore, winner }: { team: Team; showScore: boolean; 
 }
 
 function getGameStatus(game: Game) {
-  if (game.isCompleted) return 'completed';
-  if (/\b(Q|OT)\b|half|halftime|quarter/i.test(game.status)) return 'live';
+  const normalizedStatus = game.status.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (game.isCompleted || normalizedStatus === 'completed') return 'completed';
+  if (normalizedStatus === 'live' || normalizedStatus === 'in_progress' || /\b(?:q\d*|ot\d*)\b|half|halftime|quarter/i.test(game.status)) return 'live';
   return 'scheduled';
 }
 
