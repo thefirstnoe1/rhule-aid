@@ -28,7 +28,7 @@ type Game = {
   spread: string | null;
   division?: string;
   displayClock?: string;
-  period?: string;
+  period?: number;
   detail?: string;
 };
 
@@ -511,7 +511,7 @@ function LiveContext({ game, className = '' }: { game: Game; className?: string 
 }
 
 function getLiveContext(game: Game) {
-  const period = game.period?.trim();
+  const period = game.period === undefined ? '' : `Q${game.period}`;
   const displayClock = game.displayClock?.trim();
   const detail = game.detail?.trim();
 
