@@ -37,6 +37,7 @@ type ClassifiedScheduleMatch = ScheduleMatch & {
 };
 
 interface ESPNResponse { events: ESPNGame[]; leagues: unknown[] }
+interface ESPNScoreboardFallbackResponse { content?: { scoreboard?: { events?: unknown[] } }; events?: unknown[] }
 interface ESPNGame {
   id: string;
   date?: string;
@@ -324,8 +325,9 @@ function hasKickoffTime(datetime: string): boolean {
 }
 
 async function fetchScoreboard(season: number, week: string, date: string): Promise<ESPNGame[]> {
-  const params = new URLSearchParams({ groups: '80', limit: '1000', week, dates: formatScoreboardDate(date), seasontype: '2' });
-  const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?${params}`, {
+  const scoreboardDate = formatScoreboardDate(date);
+  const params = new URLSearchParams({ groups: '80', limit: '1000', week, dates: scoreboardDate, seasontype: '2' });
+  const options: RequestInit = {
     headers: {
       Accept: 'application/json',
       'User-Agent': 'Mozilla/5.0',
@@ -333,11 +335,34 @@ async function fetchScoreboard(season: number, week: string, date: string): Prom
     },
     cache: 'no-store',
     signal: AbortSignal.timeout(5000),
+  };
+  try {
+    const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard?${params}`, options);
+    if (!response.ok) throw new Error(`ESPN scoreboard failed: ${response.status}`);
+    const data: unknown = await response.json();
+    if (!data || typeof data !== 'object' || !Array.isArray((data as ESPNResponse).events)) throw new Error('Invalid ESPN scoreboard response');
+    const events = (data as ESPNResponse).events;
+    if (hasScoreboardDateEvents(events, scoreboardDate)) return events;
+    throw new Error('ESPN scoreboard had no events for requested date');
+  } catch (error) {
+    console.warn('ESPN site scoreboard unavailable; trying CDN fallback:', error);
+  }
+
+  const fallback = await fetch(`https://cdn.espn.com/core/college-football/scoreboard?xhr=1&dates=${scoreboardDate}`, options);
+  if (!fallback.ok) throw new Error(`ESPN CDN scoreboard failed: ${fallback.status}`);
+  const data: unknown = await fallback.json();
+  if (!data || typeof data !== 'object') throw new Error('Invalid ESPN CDN scoreboard response');
+  const response = data as ESPNScoreboardFallbackResponse;
+  const events = response.content?.scoreboard?.events || response.events;
+  if (!Array.isArray(events)) throw new Error('Invalid ESPN CDN scoreboard events');
+  return events.filter((event): event is ESPNGame => Boolean(event && typeof event === 'object'));
+}
+
+function hasScoreboardDateEvents(events: ESPNGame[], scoreboardDate: string): boolean {
+  return events.length > 0 && events.some(event => {
+    const eventDate = event.date || event.competitions?.[0]?.date;
+    return !eventDate || eventDate.replace(/-/g, '').slice(0, 8) === scoreboardDate;
   });
-  if (!response.ok) throw new Error(`ESPN scoreboard failed: ${response.status}`);
-  const data: unknown = await response.json();
-  if (!data || typeof data !== 'object' || !Array.isArray((data as ESPNResponse).events)) throw new Error('Invalid ESPN scoreboard response');
-  return (data as ESPNResponse).events;
 }
 
 function formatScoreboardDate(date: string): string {
