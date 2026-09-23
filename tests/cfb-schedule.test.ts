@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { onRequest } from '../src/api/cfb-schedule.ts';
 
-function request(division?: 'all', etag?: string, week = '1', date?: string) {
-  return new Request(`https://rhule-aid.com/api/cfb-schedule?season=2025&week=${week}${date ? `&date=${date}` : ''}${division ? `&division=${division}` : ''}`, etag ? { headers: { 'If-None-Match': etag } } : undefined);
+function request(division?: 'all', etag?: string, week: string | null = '1', date?: string) {
+  return new Request(`https://rhule-aid.com/api/cfb-schedule?season=2025${week === null ? '' : `&week=${week}`}${date ? `&date=${date}` : ''}${division ? `&division=${division}` : ''}`, etag ? { headers: { 'If-None-Match': etag } } : undefined);
 }
 
-function context(division?: 'all', etag?: string, cache = new Map<string, string>(), week = '1', date?: string): Parameters<typeof onRequest>[0] {
+function context(division?: 'all', etag?: string, cache = new Map<string, string>(), week: string | null = '1', date?: string): Parameters<typeof onRequest>[0] {
   return {
     request: request(division, etag, week, date),
     env: {
@@ -50,6 +50,49 @@ beforeEach(() => {
 });
 
 describe('CFBD division views', () => {
+  it('overlays the per-week Durable Object snapshot in do mode', async () => {
+    const liveSnapshot = {
+      games: [{ id: '1', competitions: [{ competitors: [
+        { homeAway: 'home', score: '24' }, { homeAway: 'away', score: '17' },
+      ], status: { displayClock: '04:12', period: 3, type: { state: 'in', name: 'In Progress', completed: false }, detail: 'Nebraska possession' }, situation: { possession: 'Nebraska' } }] }],
+    };
+    const liveFetch = vi.fn(async () => new Response(JSON.stringify(liveSnapshot)));
+    const cache = new Map<string, string>([['cfb-live-active:v1:2025:regular:1', '1']]);
+    const ctx = context(undefined, undefined, cache);
+    (ctx.env as any).CFB_SYNC_MODE = 'do';
+    (ctx.env as any).CFB_WEEK_LIVE_FEED = { idFromName: vi.fn(() => ({})), get: vi.fn(() => ({ fetch: liveFetch })) };
+
+    const response = await onRequest(ctx);
+    const body = await response.json() as { games: Array<{ homeTeam: { score: number }; awayTeam: { score: number }; status: string; displayClock: string; period: number; possession: string }> };
+
+    expect(body.games[0]).toMatchObject({ status: 'In Progress', displayClock: '04:12', period: 3, possession: 'Nebraska' });
+    expect(body.games[0]?.homeTeam.score).toBe(24);
+    expect(body.games[0]?.awayTeam.score).toBe(17);
+    expect(liveFetch).toHaveBeenCalledWith(expect.objectContaining({ url: expect.stringContaining('seasonType=regular') }));
+  });
+
+  it('retains legacy output when the Durable Object snapshot fails', async () => {
+    const ctx = context();
+    (ctx.env as any).CFB_SYNC_MODE = 'do';
+    (ctx.env as any).CFB_WEEK_LIVE_FEED = { idFromName: vi.fn(() => ({})), get: vi.fn(() => ({ fetch: vi.fn(async () => new Response('unavailable', { status: 503 })) })) };
+
+    const response = await onRequest(ctx);
+    const body = await response.json() as { games: Array<{ id: string; status: string }> };
+
+    expect(response.status).toBe(200);
+    expect(body.games[0]).toMatchObject({ id: '1', status: 'Scheduled' });
+  });
+
+  it('retains legacy output and does not allocate when live week is inactive', async () => {
+    const ctx = context();
+    (ctx.env as any).CFB_SYNC_MODE = 'do';
+    (ctx.env as any).CFB_WEEK_LIVE_FEED = { idFromName: vi.fn(() => { throw new Error('must not allocate'); }), get: vi.fn(() => { throw new Error('must not allocate'); }) };
+
+    const response = await onRequest(ctx);
+    expect(response.status).toBe(200);
+    expect((await response.json() as { games: Array<{ status: string }> }).games[0]).toMatchObject({ status: 'Scheduled' });
+  });
+
   it('canonicalizes zero-padded weeks and matches numeric overlay IDs', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -339,6 +382,59 @@ describe('CFBD division views', () => {
     const response = await onRequest(context());
     const body = await response.json() as { weeks: Array<{ label: string; value: string }> };
     expect(body.weeks).toEqual([{ label: 'Week 1', value: '1' }]);
+  });
+
+  it('preserves an explicitly requested week without using calendar dates', async () => {
+    const response = await onRequest(context(undefined, undefined, new Map(), '7'));
+    const gameRequest = vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/games?'));
+    expect(String(gameRequest?.[0])).toContain('week=7');
+    expect(vi.mocked(fetch).mock.calls.some(call => String(call[0]).includes('/calendar?'))).toBe(true);
+  });
+
+  it('selects the calendar week containing today when week is omitted', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-09-10T12:00:00Z'));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/calendar?')) return new Response(JSON.stringify([
+        { week: 2, seasonType: 'regular', firstGameStart: '2025-09-06T00:00:00Z', lastGameStart: '2025-09-12T23:59:59Z' },
+        { week: 3, seasonType: 'regular', firstGameStart: '2025-09-13T00:00:00Z', lastGameStart: '2025-09-19T23:59:59Z' },
+      ]));
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]));
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]');
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]));
+      return new Response(JSON.stringify({ events: [] }));
+    }));
+    try {
+      await onRequest(context(undefined, undefined, new Map(), null));
+      const gameRequest = vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/games?'));
+      expect(String(gameRequest?.[0])).toContain('week=2');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('selects the nearest upcoming calendar week when today falls between weeks', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-09-12T12:00:00Z'));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/calendar?')) return new Response(JSON.stringify([
+        { week: 2, seasonType: 'regular', firstGameStart: '2025-09-01T00:00:00Z', lastGameStart: '2025-09-05T23:59:59Z' },
+        { week: 3, seasonType: 'regular', firstGameStart: '2025-09-13T00:00:00Z', lastGameStart: '2025-09-19T23:59:59Z' },
+      ]));
+      if (url.includes('/teams?')) return new Response(JSON.stringify([{ id: 1, classification: 'fbs' }, { id: 2, classification: 'fbs' }]));
+      if (url.includes('/games/media') || url.includes('/lines')) return new Response('[]');
+      if (url.includes('/games?')) return new Response(JSON.stringify([cfbdGame(1)]));
+      return new Response(JSON.stringify({ events: [] }));
+    }));
+    try {
+      await onRequest(context(undefined, undefined, new Map(), null));
+      const gameRequest = vi.mocked(fetch).mock.calls.find(call => String(call[0]).includes('/games?'));
+      expect(String(gameRequest?.[0])).toContain('week=3');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('requests unfiltered data and includes FCS games for division=all', async () => {

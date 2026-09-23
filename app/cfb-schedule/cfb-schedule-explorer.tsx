@@ -82,8 +82,8 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
   const filtersRef = useRef(filters);
   const scheduleDataRef = useRef(scheduleData);
   const hasLoadedBoardRef = useRef(!initialData.error || initialData.games.length > 0);
-  // Server-rendered data uses backend default FBS; hydrate board with explicit all.
-  const divisionRef = useRef<Filters['division']>('FBS');
+  const explicitWeekRef = useRef<string | null>(null);
+  const divisionRef = useRef<Filters['division']>(filters.division);
 
   filtersRef.current = filters;
   scheduleDataRef.current = scheduleData;
@@ -122,22 +122,23 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
     return getGameStatus(game) === 'live';
   }), [filters.week, scheduleData.games]);
 
-  const loadSchedule = useCallback(async (week = filtersRef.current.week) => {
+  const loadSchedule = useCallback(async (week?: string) => {
     if (loadingRef.current) return;
 
+    const requestedWeek = week === undefined ? explicitWeekRef.current || '' : week;
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     const division = filtersRef.current.division;
-    const resourceKey = `${week}|${division}`;
+    const resourceKey = `${requestedWeek}|${division}`;
     loadingRef.current = true;
     setLoading(true);
     setError(false);
     setStaleMessage('');
-    setAnnouncement(week ? `Loading week ${week}.` : 'Refreshing current board.');
+    setAnnouncement(requestedWeek ? `Loading week ${requestedWeek}.` : 'Refreshing current board.');
 
     try {
       const url = new URL('/api/cfb-schedule', window.location.origin);
-      if (week) url.searchParams.set('week', week);
+      if (requestedWeek) url.searchParams.set('week', requestedWeek);
       // Backend defaults to FBS. Combined and FCS views use the unfiltered
       // response, then get narrowed locally because backend supports only FBS or explicit all.
       if (division !== 'FBS') url.searchParams.set('division', 'all');
@@ -158,10 +159,11 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
       if (data.error) throw new Error(data.error);
       if (requestId !== requestIdRef.current) return;
 
+      const returnedGames = Array.isArray(data.games) ? data.games : [];
       const returnedWeeks = Array.isArray(data.weeks) ? data.weeks : [];
-      const selectedWeek = week || returnedWeeks[0]?.value || '';
+      const selectedWeek = requestedWeek || explicitWeekRef.current || returnedGames[0]?.week?.toString() || returnedWeeks[0]?.value || '';
       setScheduleData({
-        games: Array.isArray(data.games) ? data.games : [],
+        games: returnedGames,
         weeks: returnedWeeks,
         lastUpdated: data.lastUpdated,
         hasLiveGames: Boolean(data.hasLiveGames)
@@ -170,14 +172,14 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
       setError(false);
       setStaleMessage('');
       setFilters((current) => current.week === selectedWeek ? current : { ...current, week: selectedWeek });
-      setAnnouncement(week ? `Week ${week} loaded.` : 'Current board refreshed.');
+      setAnnouncement(requestedWeek ? `Week ${requestedWeek} loaded.` : 'Current board refreshed.');
     } catch (loadError) {
       console.error('Error loading CFB schedule:', loadError);
       const hasLoadedBoard = hasLoadedBoardRef.current || scheduleDataRef.current.games.length > 0;
       setError(!hasLoadedBoard);
       setStaleMessage(hasLoadedBoard ? 'Schedule refresh failed. Showing the last loaded schedule.' : '');
       setAnnouncement(hasLoadedBoard
-        ? (week ? `Unable to load week ${week}. Existing schedule data remains displayed.` : 'Unable to refresh the current board. Existing schedule data remains displayed.')
+        ? (requestedWeek ? `Unable to load week ${requestedWeek}. Existing schedule data remains displayed.` : 'Unable to refresh the current board. Existing schedule data remains displayed.')
         : 'Unable to load schedule data.');
     } finally {
       loadingRef.current = false;
@@ -186,12 +188,17 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
   }, []);
 
   useEffect(() => {
+    void loadSchedule('');
+  }, [loadSchedule]);
+
+  useEffect(() => {
     if (divisionRef.current === filters.division) return;
     divisionRef.current = filters.division;
-    void loadSchedule(filters.week);
+    void loadSchedule();
   }, [filters.division, filters.week, loadSchedule]);
 
   function selectWeek(week: string) {
+    explicitWeekRef.current = week;
     void loadSchedule(week);
   }
 
@@ -219,6 +226,120 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
       window.removeEventListener('online', resync);
     };
   }, [autoRefresh, hasLiveGames, loadSchedule]);
+
+  useEffect(() => {
+    const season = getCurrentFootballSeason();
+    const week = filters.week;
+    if (!autoRefresh || !season || !week) return undefined;
+
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let stopped = false;
+    let reconnectAttempt = 0;
+    let revision = 0;
+    let queuedRevision = 0;
+    let refreshInFlight = false;
+    let refreshTimer: number | undefined;
+
+    const isAvailable = () => !stopped && document.visibilityState === 'visible' && navigator.onLine;
+    const clearReconnect = () => {
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+    };
+    const scheduleReconnect = () => {
+      if (!isAvailable() || reconnectTimer !== undefined) return;
+      const backoff = Math.min(30000, 1000 * (2 ** reconnectAttempt));
+      reconnectAttempt += 1;
+      const jitter = 0.5 + Math.random();
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = undefined;
+        connect();
+      }, backoff * jitter);
+    };
+    const drainQueuedRefresh = () => {
+      refreshTimer = undefined;
+      if (stopped || !queuedRevision) return;
+      if (loadingRef.current || refreshInFlight) {
+        refreshTimer = window.setTimeout(drainQueuedRefresh, 50);
+        return;
+      }
+
+      queuedRevision = 0;
+      refreshInFlight = true;
+      void loadSchedule().finally(() => {
+        refreshInFlight = false;
+        if (queuedRevision) drainQueuedRefresh();
+      });
+    };
+    const requestRefresh = (nextRevision: number) => {
+      queuedRevision = Math.max(queuedRevision, nextRevision);
+      if (refreshTimer === undefined) drainQueuedRefresh();
+    };
+    const connect = () => {
+      if (!isAvailable() || socket) return;
+      const socketUrl = new URL('/api/cfb-live/socket', window.location.origin);
+      socketUrl.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socketUrl.searchParams.set('season', String(season));
+      socketUrl.searchParams.set('seasonType', 'regular');
+      socketUrl.searchParams.set('week', week);
+
+      let currentSocket: WebSocket;
+      try {
+        currentSocket = new WebSocket(socketUrl);
+      } catch {
+        scheduleReconnect();
+        return;
+      }
+      socket = currentSocket;
+      currentSocket.addEventListener('open', () => {
+        reconnectAttempt = 0;
+        currentSocket.send(JSON.stringify({ type: 'hello' }));
+      });
+      currentSocket.addEventListener('message', (event) => {
+        try {
+          const message = JSON.parse(String(event.data)) as { type?: string; revision?: number };
+          const nextRevision = message.revision;
+          if (typeof nextRevision !== 'number' || !Number.isSafeInteger(nextRevision) || nextRevision <= revision) return;
+          revision = nextRevision;
+          if (message.type === 'schedule_changed' || message.type === 'hello') requestRefresh(nextRevision);
+        } catch {
+          // Ignore malformed feed messages; polling and reconnect remain available.
+        }
+      });
+      currentSocket.addEventListener('close', () => {
+        if (socket !== currentSocket) return;
+        socket = null;
+        scheduleReconnect();
+      });
+      currentSocket.addEventListener('error', () => currentSocket.close());
+    };
+    const reconcile = () => {
+      if (isAvailable()) {
+        connect();
+        void loadSchedule();
+      } else {
+        clearReconnect();
+        const currentSocket = socket;
+        socket = null;
+        currentSocket?.close();
+      }
+    };
+
+    document.addEventListener('visibilitychange', reconcile);
+    window.addEventListener('online', reconcile);
+    connect();
+
+    return () => {
+      stopped = true;
+      clearReconnect();
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+      document.removeEventListener('visibilitychange', reconcile);
+      window.removeEventListener('online', reconcile);
+      const currentSocket = socket;
+      socket = null;
+      currentSocket?.close();
+    };
+  }, [autoRefresh, filters.division, filters.week, loadSchedule]);
 
   return (
     <div className="container-shell pb-20">
@@ -525,6 +646,11 @@ function getGameStatus(game: Game) {
   if (game.isCompleted || normalizedStatus === 'completed') return 'completed';
   if (normalizedStatus === 'live' || normalizedStatus === 'in_progress' || /\b(?:q\d*|ot\d*)\b|half|halftime|quarter/i.test(game.status)) return 'live';
   return 'scheduled';
+}
+
+function getCurrentFootballSeason() {
+  const now = new Date();
+  return now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
 }
 
 function formatGameTime(game: Game, timezone: string) {

@@ -1,4 +1,5 @@
 import type { ScheduleMatch, Context } from '../types';
+import { liveFeedActivationKey } from './cfb-live';
 
 interface CFBDGame {
   id?: number | string;
@@ -22,7 +23,7 @@ interface CFBDGame {
   awaySubdivision?: string;
 }
 interface CFBDMedia { id?: number | string; outlet?: string }
-interface CFBDCalendarEntry { week?: number | string; seasonType?: string }
+interface CFBDCalendarEntry { week?: number | string; seasonType?: string; firstGameStart?: string; lastGameStart?: string }
 interface CFBDLine { provider?: string; spread?: number | string | null; formattedSpread?: string | null }
 interface CFBDLinesGame { id?: number | string; lines?: CFBDLine[] }
 type FBSTeamMetadata = { ids: Set<number>; fcsIds: Set<number>; conferences: Map<number, string> };
@@ -55,6 +56,9 @@ interface ESPNGame {
   }>;
 }
 
+interface LiveFeedBinding { idFromName(name: string): DurableObjectId; get(id: DurableObjectId): DurableObjectStub }
+interface LiveFeedSnapshot { games?: unknown[] }
+
 interface CoreEventList { items: Array<{ $ref?: string }> }
 interface CoreCompetition { $ref?: string; id?: string; date?: string; competitors?: CoreCompetitor[]; venue?: { fullName?: string }; status?: { type?: { description?: string; completed?: boolean } } }
 interface CoreEvent { id: string; date?: string; name?: string; shortName?: string; week?: { number?: number }; competitions?: CoreCompetition[] }
@@ -72,15 +76,21 @@ export async function onRequest(context: Context): Promise<Response> {
   const { request, env } = context;
   const url = new URL(request.url);
   const season = getSeason(url);
-  const week = getWeek(url);
+  const explicitWeek = getWeek(url);
+  let calendarWeeks: ScheduleWeek[] | null = null;
+  const week = explicitWeek || (env.CFBD_API_KEY
+    ? ((calendarWeeks = await fetchCFBDCalendar(env, season, env.CFBD_API_KEY)), selectCurrentWeek(calendarWeeks) || '1')
+    : '1');
   const date = url.searchParams.get('date') || '';
   const division = url.searchParams.get('division') === 'all' ? 'all' : 'fbs';
   const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:${season}:${week}:${date || 'current'}:${division}`;
   const cached = await readCache(env, cacheKey);
-  if (cached) return jsonResponse(cached, 200, scheduleTtl(cached, date), request);
+  if (cached) {
+    const withLive = await applyLiveFeedOverlay(env, cached, season, week);
+    return jsonResponse(withLive, 200, scheduleTtl(withLive, date), request);
+  }
 
   let games: ScheduleMatch[] = [];
-  let calendarWeeks: ScheduleWeek[] | null = null;
   if (env.CFBD_API_KEY) {
     try {
       const [cfbdGames, fbsTeams, media, lines, calendar] = await Promise.all([
@@ -88,7 +98,7 @@ export async function onRequest(context: Context): Promise<Response> {
         getFBSTeamMetadata(env, season, env.CFBD_API_KEY),
         fetchCFBDMedia(season, week, env.CFBD_API_KEY),
         fetchCFBDLines(season, week, env.CFBD_API_KEY),
-        fetchCFBDCalendar(env, season, env.CFBD_API_KEY),
+        calendarWeeks || fetchCFBDCalendar(env, season, env.CFBD_API_KEY),
       ]);
       calendarWeeks = calendar;
       games = cfbdGames.map(game => normalizeCFBDGame(game, season, week, fbsTeams, media, lines)).filter(isGame).sort(sortGames);
@@ -123,10 +133,31 @@ export async function onRequest(context: Context): Promise<Response> {
 
   if (games.length === 0) return jsonResponse({ games: [], weeks: [], lastUpdated: new Date().toISOString(), hasLiveGames: false, error: 'Schedule data unavailable from CFBD and ESPN' }, 502, 0);
 
-  const result = makeResult(games, week, calendarWeeks || [{ label: `Week ${week}`, value: week }]);
+  const result = await applyLiveFeedOverlay(env, makeResult(games, week, calendarWeeks || [{ label: `Week ${week}`, value: week }]), season, week);
   const ttl = scheduleTtl(result, date);
   await writeCache(env, cacheKey, result, ttl);
   return jsonResponse(result, 200, ttl, request);
+}
+
+async function applyLiveFeedOverlay(env: Context['env'], result: { games: ScheduleMatch[]; weeks: ScheduleWeek[]; lastUpdated: string; hasLiveGames: boolean }, season: number, week: string): Promise<typeof result> {
+  if (env.CFB_SYNC_MODE !== 'do' || !env.CFB_WEEK_LIVE_FEED) return result;
+  try {
+    const marker = liveFeedActivationKey(season, 'regular', week);
+    if (!marker || !env.CFB_SCHEDULE_CACHE || (await env.CFB_SCHEDULE_CACHE.get(marker)) === null) return result;
+    const binding = env.CFB_WEEK_LIVE_FEED as unknown as LiveFeedBinding;
+    const canonicalWeek = String(Number(week));
+    const name = `${season}:regular:${canonicalWeek}`;
+    const stub = binding.get(binding.idFromName(name));
+    const response = await stub.fetch(new Request(`https://cfb-live.internal/snapshot?season=${season}&seasonType=regular&week=${encodeURIComponent(canonicalWeek)}`));
+    if (!response.ok) throw new Error(`CFB live snapshot failed: ${response.status}`);
+    const snapshot = await response.json() as LiveFeedSnapshot;
+    if (!Array.isArray(snapshot.games) || snapshot.games.length === 0) return result;
+    const games = mergeLiveFeedOverlay(result.games, snapshot.games);
+    return { ...result, games, hasLiveGames: games.some(game => !game.isCompleted && isLiveStatus(game.status)) };
+  } catch (error) {
+    console.warn('CFB live snapshot unavailable; retaining legacy schedule:', error);
+    return result;
+  }
 }
 
 async function fetchCFBD(season: number, week: string, key: string, division: 'fbs' | 'all'): Promise<CFBDGame[]> {
@@ -180,10 +211,10 @@ function mediaOutletRank(outlet: string): number {
   return 3;
 }
 
-interface ScheduleWeek { label: string; value: string }
+interface ScheduleWeek { label: string; value: string; firstGameStart?: string; lastGameStart?: string }
 
 async function fetchCFBDCalendar(env: Context['env'], season: number, key: string): Promise<ScheduleWeek[] | null> {
-  const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:calendar:${season}`;
+  const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:calendar:v2:${season}`;
   try {
     const cached = await env.CFB_SCHEDULE_CACHE?.get(cacheKey);
     if (cached) {
@@ -195,18 +226,37 @@ async function fetchCFBDCalendar(env: Context['env'], season: number, key: strin
     if (!response.ok) throw new Error(`CFBD calendar failed: ${response.status}`);
     const data: unknown = await response.json();
     if (!Array.isArray(data)) throw new Error('Invalid CFBD calendar response');
-    const values = [...new Set(data.flatMap(row => {
+    const values = [...new Map(data.flatMap(row => {
       const entry = row as CFBDCalendarEntry;
-      return entry.seasonType && entry.seasonType.toLowerCase() !== 'regular' ? [] : entry.week === undefined ? [] : [String(entry.week).trim()];
-    }).filter(value => /^\d+$/.test(value)))].sort((a, b) => Number(a) - Number(b));
+      if (entry.seasonType && entry.seasonType.toLowerCase() !== 'regular' || entry.week === undefined) return [];
+      const value = String(entry.week).trim();
+      return /^\d+$/.test(value) ? [[value, { label: `Week ${value}`, value, firstGameStart: entry.firstGameStart, lastGameStart: entry.lastGameStart }] as const] : [];
+    }))].sort(([a], [b]) => Number(a) - Number(b)).map(([, week]) => week);
     if (!values.length) throw new Error('CFBD calendar response had no regular-season weeks');
-    const weeks = values.map(value => ({ label: `Week ${value}`, value }));
+    const weeks = values;
     await env.CFB_SCHEDULE_CACHE?.put(cacheKey, JSON.stringify({ weeks }), { expirationTtl: CALENDAR_CACHE_TTL });
     return weeks;
   } catch (error) {
     console.warn('CFBD calendar unavailable; retaining requested week:', error);
     return null;
   }
+}
+
+function selectCurrentWeek(weeks: ScheduleWeek[] | null, now = new Date()): string | null {
+  if (!weeks?.length) return null;
+  const dated = weeks
+    .map(week => ({ week, start: parseCalendarDate(week.firstGameStart), end: parseCalendarDate(week.lastGameStart) }))
+    .filter((entry): entry is { week: ScheduleWeek; start: Date; end: Date } => entry.start !== null && entry.end !== null)
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+  const containing = dated.find(({ start, end }) => start.getTime() <= now.getTime() && now.getTime() <= end.getTime());
+  if (containing) return containing.week.value;
+  return dated.find(({ start }) => start.getTime() > now.getTime())?.week.value || null;
+}
+
+function parseCalendarDate(value?: string): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 const LINE_PROVIDER_PRIORITY = ['consensus', 'espn', 'draftkings', 'fanduel'];
@@ -464,6 +514,54 @@ function mergeOverlay(games: ScheduleMatch[], events: ESPNGame[]): ScheduleMatch
   });
 }
 
+function mergeLiveFeedOverlay(games: ScheduleMatch[], payloads: unknown[]): ScheduleMatch[] {
+  return games.map(game => {
+    const payload = payloads.find(candidate => liveFeedGameId(candidate) === String(game.id));
+    if (!payload || typeof payload !== 'object') return game;
+
+    const value = payload as Record<string, any>;
+    const competition = value.competitions?.[0] || value.competition || value;
+    const competitors = Array.isArray(competition?.competitors) ? competition.competitors : [];
+    const home = competitors.find((competitor: any) => competitor?.homeAway === 'home');
+    const away = competitors.find((competitor: any) => competitor?.homeAway === 'away');
+    const status = competition?.status || value.status || {};
+    const statusType = status.type || {};
+    const situation = competition?.situation || value.situation;
+    const lastPlay = competition?.lastPlay || value.lastPlay || situation?.lastPlay;
+    const displayClock = status.displayClock ?? status.currentClock ?? situation?.displayClock ?? situation?.currentClock ?? value.displayClock ?? value.currentClock;
+    const period = status.period ?? status.currentPeriod ?? situation?.period ?? situation?.currentPeriod ?? value.period ?? value.currentPeriod;
+    const state = statusType.state ?? status.state ?? value.state;
+    const statusValue = [typeof status === 'string' ? status : undefined, statusType.description, statusType.detail, statusType.shortDetail, statusType.name, status.description, status.detail, state]
+      .find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0)?.trim();
+    const detail = status.detail || statusType.detail || situation?.detail || value.detail;
+    const updated: Record<string, unknown> = { ...game };
+    const homeScore = home?.score ?? value.homeScore ?? value.homePoints ?? value.homeTeam?.score;
+    const awayScore = away?.score ?? value.awayScore ?? value.awayPoints ?? value.awayTeam?.score;
+    if (homeScore !== undefined) updated.homeTeam = { ...game.homeTeam, score: Number(homeScore) || 0 };
+    if (awayScore !== undefined) updated.awayTeam = { ...game.awayTeam, score: Number(awayScore) || 0 };
+    if (statusValue) updated.status = statusValue;
+    if (state) updated.state = state;
+    if (statusType.completed !== undefined) updated.isCompleted = statusType.completed;
+    else if (state && /^(post|final|completed)$/i.test(state)) updated.isCompleted = true;
+    else if (statusValue && /final|completed/i.test(statusValue)) updated.isCompleted = true;
+    if (displayClock !== undefined) { updated.displayClock = displayClock; updated.currentClock = displayClock; }
+    if (period !== undefined) { updated.period = period; updated.currentPeriod = period; }
+    if (detail) updated.detail = detail;
+    if (value.possession !== undefined || situation?.possession !== undefined) updated.possession = value.possession ?? situation.possession;
+    if (situation !== undefined) updated.situation = situation;
+    if (lastPlay !== undefined) updated.lastPlay = lastPlay;
+    return updated as unknown as ScheduleMatch;
+  });
+}
+
+function liveFeedGameId(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const value = payload as Record<string, any>;
+  const competition = value.competitions?.[0] || value.competition;
+  const id = value.gameId ?? value.id ?? value.eventId ?? value.event?.id ?? competition?.id;
+  return id === undefined || id === null ? null : String(id);
+}
+
 function sameTeam(left?: string, right?: string): boolean {
   if (!left || !right) return false;
   const normalizedLeft = normalizeTeamName(left);
@@ -536,4 +634,4 @@ function matchesETag(value: string | null, etag: string): boolean {
   });
 }
 function getSeason(url: URL): number { const requested = url.searchParams.get('season'); if (requested && /^\d{4}$/.test(requested)) return Number(requested); const now = new Date(); return now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear(); }
-function getWeek(url: URL): string { const requested = url.searchParams.get('week'); if (!requested) return '1'; const numeric = Number(requested); return /^\d+$/.test(requested) && Number.isSafeInteger(numeric) ? String(numeric) : requested; }
+function getWeek(url: URL): string | null { const requested = url.searchParams.get('week'); if (!requested) return null; const numeric = Number(requested); return /^\d+$/.test(requested) && Number.isSafeInteger(numeric) ? String(numeric) : requested; }

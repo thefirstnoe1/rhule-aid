@@ -12,6 +12,7 @@ import { handleGameStatusRequest } from '../../../src/api/nebraska-game-status';
 import { handleGameCalendarRequest } from '../../../src/api/game-calendar';
 import { handleWeatherAlertsRequest } from '../../../src/api/weather-alerts';
 import type { Env } from '../../../src/types';
+import { handleCfbLive, handleCfbLiveSocket, handleCfbRelayIngest } from '../../../src/api/cfb-live';
 
 type RouteContext = {
   params: Promise<{
@@ -25,6 +26,9 @@ async function routeAPIRequest(request: Request, context: RouteContext): Promise
   const env = getCloudflareContext().env as Env;
 
   try {
+    if (path === '/api/cfb-live') return request.method === 'GET' ? handleCfbLive(request, env) : Response.json({ error: 'Method Not Allowed' }, { status: 405 });
+    if (path === '/api/cfb-live/socket') return request.method === 'GET' ? handleCfbLiveSocket(request, env) : Response.json({ error: 'Method Not Allowed' }, { status: 405 });
+    if (path === '/api/internal/cfbd/events') return request.method === 'POST' ? handleCfbRelayIngest(request, env) : Response.json({ error: 'Method Not Allowed' }, { status: 405 });
     switch (path) {
       case '/api/schedule':
         return await handleScheduleRequest(request, env);
