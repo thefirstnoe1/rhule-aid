@@ -82,8 +82,8 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
   const filtersRef = useRef(filters);
   const scheduleDataRef = useRef(scheduleData);
   const hasLoadedBoardRef = useRef(!initialData.error || initialData.games.length > 0);
-  // Server-rendered data uses backend default FBS; hydrate board with explicit all.
-  const divisionRef = useRef<Filters['division']>('FBS');
+  const explicitWeekRef = useRef<string | null>(null);
+  const divisionRef = useRef<Filters['division']>(filters.division);
 
   filtersRef.current = filters;
   scheduleDataRef.current = scheduleData;
@@ -122,22 +122,23 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
     return getGameStatus(game) === 'live';
   }), [filters.week, scheduleData.games]);
 
-  const loadSchedule = useCallback(async (week = filtersRef.current.week) => {
+  const loadSchedule = useCallback(async (week?: string) => {
     if (loadingRef.current) return;
 
+    const requestedWeek = week === undefined ? explicitWeekRef.current || '' : week;
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     const division = filtersRef.current.division;
-    const resourceKey = `${week}|${division}`;
+    const resourceKey = `${requestedWeek}|${division}`;
     loadingRef.current = true;
     setLoading(true);
     setError(false);
     setStaleMessage('');
-    setAnnouncement(week ? `Loading week ${week}.` : 'Refreshing current board.');
+    setAnnouncement(requestedWeek ? `Loading week ${requestedWeek}.` : 'Refreshing current board.');
 
     try {
       const url = new URL('/api/cfb-schedule', window.location.origin);
-      if (week) url.searchParams.set('week', week);
+      if (requestedWeek) url.searchParams.set('week', requestedWeek);
       // Backend defaults to FBS. Combined and FCS views use the unfiltered
       // response, then get narrowed locally because backend supports only FBS or explicit all.
       if (division !== 'FBS') url.searchParams.set('division', 'all');
@@ -158,10 +159,11 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
       if (data.error) throw new Error(data.error);
       if (requestId !== requestIdRef.current) return;
 
+      const returnedGames = Array.isArray(data.games) ? data.games : [];
       const returnedWeeks = Array.isArray(data.weeks) ? data.weeks : [];
-      const selectedWeek = week || returnedWeeks[0]?.value || '';
+      const selectedWeek = requestedWeek || explicitWeekRef.current || returnedGames[0]?.week?.toString() || returnedWeeks[0]?.value || '';
       setScheduleData({
-        games: Array.isArray(data.games) ? data.games : [],
+        games: returnedGames,
         weeks: returnedWeeks,
         lastUpdated: data.lastUpdated,
         hasLiveGames: Boolean(data.hasLiveGames)
@@ -170,14 +172,14 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
       setError(false);
       setStaleMessage('');
       setFilters((current) => current.week === selectedWeek ? current : { ...current, week: selectedWeek });
-      setAnnouncement(week ? `Week ${week} loaded.` : 'Current board refreshed.');
+      setAnnouncement(requestedWeek ? `Week ${requestedWeek} loaded.` : 'Current board refreshed.');
     } catch (loadError) {
       console.error('Error loading CFB schedule:', loadError);
       const hasLoadedBoard = hasLoadedBoardRef.current || scheduleDataRef.current.games.length > 0;
       setError(!hasLoadedBoard);
       setStaleMessage(hasLoadedBoard ? 'Schedule refresh failed. Showing the last loaded schedule.' : '');
       setAnnouncement(hasLoadedBoard
-        ? (week ? `Unable to load week ${week}. Existing schedule data remains displayed.` : 'Unable to refresh the current board. Existing schedule data remains displayed.')
+        ? (requestedWeek ? `Unable to load week ${requestedWeek}. Existing schedule data remains displayed.` : 'Unable to refresh the current board. Existing schedule data remains displayed.')
         : 'Unable to load schedule data.');
     } finally {
       loadingRef.current = false;
@@ -186,12 +188,17 @@ export function CFBScheduleExplorer({ initialData }: { initialData: CFBScheduleD
   }, []);
 
   useEffect(() => {
+    void loadSchedule('');
+  }, [loadSchedule]);
+
+  useEffect(() => {
     if (divisionRef.current === filters.division) return;
     divisionRef.current = filters.division;
-    void loadSchedule(filters.week);
+    void loadSchedule();
   }, [filters.division, filters.week, loadSchedule]);
 
   function selectWeek(week: string) {
+    explicitWeekRef.current = week;
     void loadSchedule(week);
   }
 

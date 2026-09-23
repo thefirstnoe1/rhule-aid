@@ -5,7 +5,7 @@
   "compatibility_flags": ["nodejs_compat"],
   
   // Main Worker script
-  "main": ".open-next/worker.js",
+  "main": "worker.ts",
   
   // Static assets configuration
   "assets": {
@@ -57,8 +57,17 @@
   
   // Environment variables
   "vars": {
-    "ENVIRONMENT": "production"
+    "ENVIRONMENT": "production",
+    "CFB_SYNC_MODE": "legacy"
   },
+  "durable_objects": {
+    "bindings": [
+      { "name": "CFB_WEEK_LIVE_FEED", "class_name": "CfbWeekLiveFeed" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1-cfb-week-live-feed", "new_sqlite_classes": ["CfbWeekLiveFeed"] }
+  ],
   
   // Custom domains configuration
   "routes": [

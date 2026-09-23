@@ -22,7 +22,7 @@ interface CFBDGame {
   awaySubdivision?: string;
 }
 interface CFBDMedia { id?: number | string; outlet?: string }
-interface CFBDCalendarEntry { week?: number | string; seasonType?: string }
+interface CFBDCalendarEntry { week?: number | string; seasonType?: string; firstGameStart?: string; lastGameStart?: string }
 interface CFBDLine { provider?: string; spread?: number | string | null; formattedSpread?: string | null }
 interface CFBDLinesGame { id?: number | string; lines?: CFBDLine[] }
 type FBSTeamMetadata = { ids: Set<number>; fcsIds: Set<number>; conferences: Map<number, string> };
@@ -72,7 +72,11 @@ export async function onRequest(context: Context): Promise<Response> {
   const { request, env } = context;
   const url = new URL(request.url);
   const season = getSeason(url);
-  const week = getWeek(url);
+  const explicitWeek = getWeek(url);
+  let calendarWeeks: ScheduleWeek[] | null = null;
+  const week = explicitWeek || (env.CFBD_API_KEY
+    ? ((calendarWeeks = await fetchCFBDCalendar(env, season, env.CFBD_API_KEY)), selectCurrentWeek(calendarWeeks) || '1')
+    : '1');
   const date = url.searchParams.get('date') || '';
   const division = url.searchParams.get('division') === 'all' ? 'all' : 'fbs';
   const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:${season}:${week}:${date || 'current'}:${division}`;
@@ -80,7 +84,6 @@ export async function onRequest(context: Context): Promise<Response> {
   if (cached) return jsonResponse(cached, 200, scheduleTtl(cached, date), request);
 
   let games: ScheduleMatch[] = [];
-  let calendarWeeks: ScheduleWeek[] | null = null;
   if (env.CFBD_API_KEY) {
     try {
       const [cfbdGames, fbsTeams, media, lines, calendar] = await Promise.all([
@@ -88,7 +91,7 @@ export async function onRequest(context: Context): Promise<Response> {
         getFBSTeamMetadata(env, season, env.CFBD_API_KEY),
         fetchCFBDMedia(season, week, env.CFBD_API_KEY),
         fetchCFBDLines(season, week, env.CFBD_API_KEY),
-        fetchCFBDCalendar(env, season, env.CFBD_API_KEY),
+        calendarWeeks || fetchCFBDCalendar(env, season, env.CFBD_API_KEY),
       ]);
       calendarWeeks = calendar;
       games = cfbdGames.map(game => normalizeCFBDGame(game, season, week, fbsTeams, media, lines)).filter(isGame).sort(sortGames);
@@ -180,10 +183,10 @@ function mediaOutletRank(outlet: string): number {
   return 3;
 }
 
-interface ScheduleWeek { label: string; value: string }
+interface ScheduleWeek { label: string; value: string; firstGameStart?: string; lastGameStart?: string }
 
 async function fetchCFBDCalendar(env: Context['env'], season: number, key: string): Promise<ScheduleWeek[] | null> {
-  const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:calendar:${season}`;
+  const cacheKey = `cfb-schedule:${CACHE_SCHEMA}:calendar:v2:${season}`;
   try {
     const cached = await env.CFB_SCHEDULE_CACHE?.get(cacheKey);
     if (cached) {
@@ -195,18 +198,37 @@ async function fetchCFBDCalendar(env: Context['env'], season: number, key: strin
     if (!response.ok) throw new Error(`CFBD calendar failed: ${response.status}`);
     const data: unknown = await response.json();
     if (!Array.isArray(data)) throw new Error('Invalid CFBD calendar response');
-    const values = [...new Set(data.flatMap(row => {
+    const values = [...new Map(data.flatMap(row => {
       const entry = row as CFBDCalendarEntry;
-      return entry.seasonType && entry.seasonType.toLowerCase() !== 'regular' ? [] : entry.week === undefined ? [] : [String(entry.week).trim()];
-    }).filter(value => /^\d+$/.test(value)))].sort((a, b) => Number(a) - Number(b));
+      if (entry.seasonType && entry.seasonType.toLowerCase() !== 'regular' || entry.week === undefined) return [];
+      const value = String(entry.week).trim();
+      return /^\d+$/.test(value) ? [[value, { label: `Week ${value}`, value, firstGameStart: entry.firstGameStart, lastGameStart: entry.lastGameStart }] as const] : [];
+    }))].sort(([a], [b]) => Number(a) - Number(b)).map(([, week]) => week);
     if (!values.length) throw new Error('CFBD calendar response had no regular-season weeks');
-    const weeks = values.map(value => ({ label: `Week ${value}`, value }));
+    const weeks = values;
     await env.CFB_SCHEDULE_CACHE?.put(cacheKey, JSON.stringify({ weeks }), { expirationTtl: CALENDAR_CACHE_TTL });
     return weeks;
   } catch (error) {
     console.warn('CFBD calendar unavailable; retaining requested week:', error);
     return null;
   }
+}
+
+function selectCurrentWeek(weeks: ScheduleWeek[] | null, now = new Date()): string | null {
+  if (!weeks?.length) return null;
+  const dated = weeks
+    .map(week => ({ week, start: parseCalendarDate(week.firstGameStart), end: parseCalendarDate(week.lastGameStart) }))
+    .filter((entry): entry is { week: ScheduleWeek; start: Date; end: Date } => entry.start !== null && entry.end !== null)
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+  const containing = dated.find(({ start, end }) => start.getTime() <= now.getTime() && now.getTime() <= end.getTime());
+  if (containing) return containing.week.value;
+  return dated.find(({ start }) => start.getTime() > now.getTime())?.week.value || null;
+}
+
+function parseCalendarDate(value?: string): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 const LINE_PROVIDER_PRIORITY = ['consensus', 'espn', 'draftkings', 'fanduel'];
@@ -536,4 +558,4 @@ function matchesETag(value: string | null, etag: string): boolean {
   });
 }
 function getSeason(url: URL): number { const requested = url.searchParams.get('season'); if (requested && /^\d{4}$/.test(requested)) return Number(requested); const now = new Date(); return now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear(); }
-function getWeek(url: URL): string { const requested = url.searchParams.get('week'); if (!requested) return '1'; const numeric = Number(requested); return /^\d+$/.test(requested) && Number.isSafeInteger(numeric) ? String(numeric) : requested; }
+function getWeek(url: URL): string | null { const requested = url.searchParams.get('week'); if (!requested) return null; const numeric = Number(requested); return /^\d+$/.test(requested) && Number.isSafeInteger(numeric) ? String(numeric) : requested; }

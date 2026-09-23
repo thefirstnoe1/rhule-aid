@@ -8,6 +8,10 @@ export interface Env {
   STANDINGS_CACHE: any;
   CFB_SCHEDULE_CACHE: any;
   ASSETS: any;
+  CFB_WEEK_LIVE_FEED: DurableObjectNamespace;
+  CFBD_RELAY_HMAC_SECRET?: string;
+  CFB_ALLOWED_ORIGINS?: string;
+  CFB_SYNC_MODE?: 'legacy' | 'shadow' | 'do';
   OPENWEATHER_API_KEY: string;
   CFBD_API_KEY: string;
 }
